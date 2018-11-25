@@ -706,6 +706,8 @@ def main():
                              "bert-large-uncased, bert-base-cased, bert-base-multilingual, bert-base-chinese.")
     parser.add_argument("--output_dir", default=None, type=str, required=True,
                         help="The output directory where the model checkpoints will be written.")
+    parser.add_argument("--trained_model", default=None, type=str, required=True,
+                        help="Specify path to trained model required for prediction.")
 
     ## Other parameters
     parser.add_argument("--train_file", default=None, type=str, help="SQuAD json for training. E.g., train-v1.1.json")
@@ -823,6 +825,8 @@ def main():
 
     # Prepare model
     model = BertForQuestionAnswering.from_pretrained(args.bert_model)
+    #the_model = TheModelClass(*args, **kwargs)
+    model.load_state_dict(torch.load(args.trained_model))
     if args.fp16:
         model.half()
     model.to(device)
@@ -852,72 +856,8 @@ def main():
                          t_total=num_train_steps)
 
     global_step = 0
-    if args.do_train:
-        train_features = convert_examples_to_features(
-            examples=train_examples,
-            tokenizer=tokenizer,
-            max_seq_length=args.max_seq_length,
-            doc_stride=args.doc_stride,
-            max_query_length=args.max_query_length,
-            is_training=True)
-        logger.info("***** Running training *****")
-        logger.info("  Num orig examples = %d", len(train_examples))
-        logger.info("  Num split examples = %d", len(train_features))
-        logger.info("  Batch size = %d", args.train_batch_size)
-        logger.info("  Num steps = %d", num_train_steps)
-        all_input_ids = torch.tensor([f.input_ids for f in train_features], dtype=torch.long)
-        all_input_mask = torch.tensor([f.input_mask for f in train_features], dtype=torch.long)
-        all_segment_ids = torch.tensor([f.segment_ids for f in train_features], dtype=torch.long)
-        all_start_positions = torch.tensor([f.start_position for f in train_features], dtype=torch.long)
-        all_end_positions = torch.tensor([f.end_position for f in train_features], dtype=torch.long)
-        train_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids,
-                                   all_start_positions, all_end_positions)
-        if args.local_rank == -1:
-            train_sampler = RandomSampler(train_data)
-        else:
-            train_sampler = DistributedSampler(train_data)
-        train_dataloader = DataLoader(train_data, sampler=train_sampler, batch_size=args.train_batch_size)
-
-        model.train()
-        for _ in trange(int(args.num_train_epochs), desc="Epoch"):
-            ep = 0
-            for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
-                if n_gpu == 1:
-                    batch = tuple(t.to(device) for t in batch) # multi-gpu does scattering it-self
-                input_ids, input_mask, segment_ids, start_positions, end_positions = batch
-                loss = model(input_ids, segment_ids, input_mask, start_positions, end_positions)
-                if n_gpu > 1:
-                    loss = loss.mean() # mean() to average on multi-gpu.
-                if args.fp16 and args.loss_scale != 1.0:
-                    # rescale loss for fp16 training
-                    # see https://docs.nvidia.com/deeplearning/sdk/mixed-precision-training/index.html
-                    loss = loss * args.loss_scale
-                if args.gradient_accumulation_steps > 1:
-                    loss = loss / args.gradient_accumulation_steps
-                loss.backward()
-                if (step + 1) % args.gradient_accumulation_steps == 0:
-                    if args.fp16 or args.optimize_on_cpu:
-                        if args.fp16 and args.loss_scale != 1.0:
-                            # scale down gradients for fp16 training
-                            for param in model.parameters():
-                                if param.grad is not None:
-                                    param.grad.data = param.grad.data / args.loss_scale
-                        is_nan = set_optimizer_params_grad(param_optimizer, model.named_parameters(), test_nan=True)
-                        if is_nan:
-                            logger.info("FP16 TRAINING: Nan in gradients, reducing loss scaling")
-                            args.loss_scale = args.loss_scale / 2
-                            model.zero_grad()
-                            continue
-                        optimizer.step()
-                        copy_optimizer_params_to_model(model.named_parameters(), param_optimizer)
-                    else:
-                        optimizer.step()
-                    model.zero_grad()
-                    global_step += 1
-            torch.save(model.state_dict(), (args.output_dir+ "train_epoch" + ep  + ".json"))
-            ep = ep +1
-
-    if args.do_predict:
+    
+    if True:
         eval_examples = read_squad_examples(
             input_file=args.predict_file, is_training=False)
         eval_features = convert_examples_to_features(
