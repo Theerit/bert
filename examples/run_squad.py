@@ -884,7 +884,7 @@ def main():
         
         ##### To create and save loss in evaluation dataset #######################
         eval_examples = read_squad_examples(
-            input_file=args.predict_file, is_training=False)
+            input_file=args.predict_file, is_training=True)
         eval_features = convert_examples_to_features(
             examples=eval_examples,
             tokenizer=tokenizer,
