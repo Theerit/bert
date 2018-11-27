@@ -773,7 +773,8 @@ def main():
 
     if args.local_rank == -1 or args.no_cuda:
         device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
-        n_gpu = torch.cuda.device_count()
+        #n_gpu = torch.cuda.device_count()
+        n_gpu = 1
     else:
         device = torch.device("cuda", args.local_rank)
         n_gpu = 1
@@ -885,6 +886,7 @@ def main():
         eval_dataloader = DataLoader(eval_data, sampler=eval_sampler, batch_size=args.predict_batch_size)
 
         model.eval()
+        loss_eval = {}
         all_results = []
         logger.info("Start evaluating")
         for input_ids, input_mask, segment_ids, example_indices in tqdm(eval_dataloader, desc="Evaluating"):
@@ -895,6 +897,7 @@ def main():
             segment_ids = segment_ids.to(device)
             with torch.no_grad():
                 batch_start_logits, batch_end_logits = model(input_ids, segment_ids, input_mask)
+                loss_eval['epoch :'+str(ep)] = model(input_ids, segment_ids, input_mask, start_positions, end_positions)
             for i, example_index in enumerate(example_indices):
                 start_logits = batch_start_logits[i].detach().cpu().tolist()
                 end_logits = batch_end_logits[i].detach().cpu().tolist()
@@ -909,6 +912,10 @@ def main():
                           args.n_best_size, args.max_answer_length,
                           args.do_lower_case, output_prediction_file,
                           output_nbest_file, args.verbose_logging)
+         
+        #Write loss history on evaluation set
+        with open(str(args.output_dir) + "Loss_Eval.txt", "wb") as fp:   #Pickling
+            pickle.dump(loss_eval, fp)
 
 
 if __name__ == "__main__":

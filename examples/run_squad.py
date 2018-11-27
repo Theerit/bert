@@ -25,6 +25,7 @@ import json
 import math
 import os
 import random
+import pickle
 from tqdm import tqdm, trange
 
 import numpy as np
@@ -852,6 +853,8 @@ def main():
                          t_total=num_train_steps)
 
     global_step = 0
+    loss_train = {}
+    loss_eval = {}
     if args.do_train:
         train_features = convert_examples_to_features(
             examples=train_examples,
@@ -877,15 +880,46 @@ def main():
         else:
             train_sampler = DistributedSampler(train_data)
         train_dataloader = DataLoader(train_data, sampler=train_sampler, batch_size=args.train_batch_size)
+        
+        
+#         ##### To create and save loss in evaluation dataset #######################
+#         eval_examples = read_squad_examples(
+#             input_file=args.predict_file, is_training=True)
+#         eval_features = convert_examples_to_features(
+#             examples=eval_examples,
+#             tokenizer=tokenizer,
+#             max_seq_length=args.max_seq_length,
+#             doc_stride=args.doc_stride,
+#             max_query_length=args.max_query_length,
+#             is_training=False)
+
+#         eval_all_input_ids = torch.tensor([f.input_ids for f in eval_features], dtype=torch.long)
+#         eval_all_input_mask = torch.tensor([f.input_mask for f in eval_features], dtype=torch.long)
+#         eval_all_segment_ids = torch.tensor([f.segment_ids for f in eval_features], dtype=torch.long)
+#         eval_all_start_positions = torch.tensor([f.start_position for f in eval_features], dtype=torch.long)
+#         eval_all_end_positions = torch.tensor([f.end_position for f in eval_features], dtype=torch.long)
+#         eval_data = TensorDataset(eval_all_input_ids, eval_all_input_mask, eval_all_segment_ids,
+#                                    eval_all_start_positions, eval_all_end_positions)
+        
+#         if args.local_rank == -1:
+#             eval_sampler = RandomSampler(eval_data)
+#         else:
+#             eval_sampler = DistributedSampler(eval_data)
+#         # Process whole batch for evaluation set
+#         eval_dataloader = DataLoader(eval_data, samplereval_sampler, batch_size=len(eval_features))
+#         ##### To create and save loss in evaluation dataset #######################
 
         model.train()
         for _ in trange(int(args.num_train_epochs), desc="Epoch"):
             ep = 0
             for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
+                batch_count = 0
                 if n_gpu == 1:
                     batch = tuple(t.to(device) for t in batch) # multi-gpu does scattering it-self
                 input_ids, input_mask, segment_ids, start_positions, end_positions = batch
                 loss = model(input_ids, segment_ids, input_mask, start_positions, end_positions)
+                loss_train['Epoch: '+str(ep) + 'Batch: ' + str(batch_count)] = loss
+                #loss_temp = loss
                 if n_gpu > 1:
                     loss = loss.mean() # mean() to average on multi-gpu.
                 if args.fp16 and args.loss_scale != 1.0:
@@ -913,9 +947,27 @@ def main():
                     else:
                         optimizer.step()
                     model.zero_grad()
+                    batch_count = batch_count + 1
                     global_step += 1
-            torch.save(model.state_dict(), (args.output_dir+ "train_epoch" + str(ep)  + ".json"))
+                    
+            ##### To create and save loss in evaluation dataset #######################
+#             for step, batch in enumerate(tqdm(eval_dataloader, desc="Iteration")):
+#                 if n_gpu == 1:
+#                     batch = tuple(t.to(device) for t in batch) # multi-gpu does scattering it-self
+#                 input_ids, input_mask, segment_ids, start_positions, end_positions = batch
+#                 loss_eval_temp = model(input_ids, segment_ids, input_mask, start_positions, end_positions)
+#                 loss_eval['Epoch: '+str(ep) + 'Batch: ' + str(batch)] = loss_eval_temp
+                
+#             #loss_eval['epoch :'+str(ep)] = model(input_ids, segment_ids, input_mask, start_positions, end_positions)
+            ##### To create and save loss in evaluation dataset #######################
+
+            #Printing File
+            #loss_train['epoch: '+str(ep)] = loss_temp
+            torch.save(model.state_dict(), (str(args.output_dir)+ "train_epoch" + str(ep)  + ".json"))
             ep = ep +1
+        
+            
+        
 
     if args.do_predict:
         eval_examples = read_squad_examples(
@@ -955,6 +1007,8 @@ def main():
             segment_ids = segment_ids.to(device)
             with torch.no_grad():
                 batch_start_logits, batch_end_logits = model(input_ids, segment_ids, input_mask)
+                #This one is not from original repository
+                #loss_eval['epoch :'+str(ep)] = model(input_ids, segment_ids, input_mask, start_positions, end_positions)
             for i, example_index in enumerate(example_indices):
                 start_logits = batch_start_logits[i].detach().cpu().tolist()
                 end_logits = batch_end_logits[i].detach().cpu().tolist()
@@ -968,8 +1022,13 @@ def main():
         write_predictions(eval_examples, eval_features, all_results,
                           args.n_best_size, args.max_answer_length,
                           args.do_lower_case, output_prediction_file,
-                          output_nbest_file, args.verbose_logging)
-
+                          output_nbest_file, args.verbose_logging)        
+        
+        #Write loss history on training and evaluation set
+        with open(str(args.output_dir) + "Loss_Train.txt", "wb") as fp:   #Pickling
+            pickle.dump(loss_train, fp)
+#         with open(str(args.output_dir) + "Loss_Eval.txt", "wb") as fp:   #Pickling
+#             pickle.dump(loss_eval, fp)
 
 if __name__ == "__main__":
     main()
