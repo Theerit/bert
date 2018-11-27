@@ -884,14 +884,14 @@ def main():
         
         ##### To create and save loss in evaluation dataset #######################
         eval_examples = read_squad_examples(
-            input_file=args.predict_file, is_training=True)
+            input_file=args.predict_file, is_training=False)
         eval_features = convert_examples_to_features(
             examples=eval_examples,
             tokenizer=tokenizer,
             max_seq_length=args.max_seq_length,
             doc_stride=args.doc_stride,
             max_query_length=args.max_query_length,
-            is_training=False)
+            is_training=True)
 
         eval_all_input_ids = torch.tensor([f.input_ids for f in eval_features], dtype=torch.long)
         eval_all_input_mask = torch.tensor([f.input_mask for f in eval_features], dtype=torch.long)
@@ -997,6 +997,8 @@ def main():
 
         model.eval()
         all_results = []
+        batch_start_totals = []
+        batch_end_totals = []
         logger.info("Start evaluating")
         for input_ids, input_mask, segment_ids, example_indices in tqdm(eval_dataloader, desc="Evaluating"):
             if len(all_results) % 1000 == 0:
@@ -1006,6 +1008,8 @@ def main():
             segment_ids = segment_ids.to(device)
             with torch.no_grad():
                 batch_start_logits, batch_end_logits = model(input_ids, segment_ids, input_mask)
+                batch_start_totals.append(batch_start_logits)
+                batch_end_totals.append(batch_end_logits)
                 #This one is not from original repository
                 #loss_eval['epoch :'+str(ep)] = model(input_ids, segment_ids, input_mask, start_positions, end_positions)
             for i, example_index in enumerate(example_indices):
@@ -1023,11 +1027,22 @@ def main():
                           args.do_lower_case, output_prediction_file,
                           output_nbest_file, args.verbose_logging)        
         
+        #To compute total loss in evaluation dataset
+        from torch.nn import CrossEntropyLoss
+        loss_fct = CrossEntropyLoss(ignore_index=ignored_index)
+        start_loss = loss_fct(start_logits, start_positions)
+        end_loss = loss_fct(end_logits, end_positions)
+        total_loss = (start_loss + end_loss) / 2
+
         #Write loss history on training and evaluation set
         with open(str(args.output_dir) + "Loss_Train.txt", "wb") as fp:   #Pickling
             pickle.dump(loss_train, fp)
         with open(str(args.output_dir) + "Loss_Eval.txt", "wb") as fp:   #Pickling
             pickle.dump(loss_eval, fp)
+        with open(str(args.output_dir) + "Eval_Start.txt", "wb") as fp:   #Pickling
+            pickle.dump(batch_start_totals, fp)
+        with open(str(args.output_dir) + "Eval_End.txt", "wb") as fp:   #Pickling
+            pickle.dump(batch_end_totals, fp)
 
 if __name__ == "__main__":
     main()
