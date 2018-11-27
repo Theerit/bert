@@ -914,7 +914,7 @@ def main():
                         optimizer.step()
                     model.zero_grad()
                     global_step += 1
-            torch.save(model.state_dict(), (args.output_dir+ "train_epoch" + ep  + ".json"))
+            torch.save(model.state_dict(), (args.output_dir+ "train_epoch" + str(ep)  + ".json"))
             ep = ep +1
 
     if args.do_predict:
