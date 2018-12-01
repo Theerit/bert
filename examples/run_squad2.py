@@ -52,13 +52,15 @@ class SquadExample(object):
                  doc_tokens,
                  orig_answer_text=None,
                  start_position=None,
-                 end_position=None):
+                 end_position=None,
+                is_impossible=None):
         self.qas_id = qas_id
         self.question_text = question_text
         self.doc_tokens = doc_tokens
         self.orig_answer_text = orig_answer_text
         self.start_position = start_position
         self.end_position = end_position
+        self.is_impossible = is_impossible
 
     def __str__(self):
         return self.__repr__()
@@ -90,7 +92,8 @@ class InputFeatures(object):
                  input_mask,
                  segment_ids,
                  start_position=None,
-                 end_position=None):
+                 end_position=None,
+                 is_impossible=None):
         self.unique_id = unique_id
         self.example_index = example_index
         self.doc_span_index = doc_span_index
@@ -102,9 +105,11 @@ class InputFeatures(object):
         self.segment_ids = segment_ids
         self.start_position = start_position
         self.end_position = end_position
+        self.is_impossible = is_impossible
+        #self.answerable = answerable #For binary classification
 
 
-def read_squad_examples(input_file, is_training):
+def read_squad_examples(input_file, is_training, do_squad2):
     """Read a SQuAD json file into a list of SquadExample."""
     with open(input_file, "r") as reader:
         input_data = json.load(reader)["data"]
@@ -138,37 +143,47 @@ def read_squad_examples(input_file, is_training):
                 start_position = None
                 end_position = None
                 orig_answer_text = None
+                is_impossible = None
                 if is_training:
-                    if len(qa["answers"]) != 1:
+                    if do_squad2:
+                        is_impossible = qa["is_impossible"]
+                        print(is_impossible)
+                    if len(qa["answers"]) != 1 and (not is_impossible):
                         raise ValueError(
                             "For training, each question should have exactly 1 answer.")
-                    answer = qa["answers"][0]
-                    orig_answer_text = answer["text"]
-                    answer_offset = answer["answer_start"]
-                    answer_length = len(orig_answer_text)
-                    start_position = char_to_word_offset[answer_offset]
-                    end_position = char_to_word_offset[answer_offset + answer_length - 1]
-                    # Only add answers where the text can be exactly recovered from the
-                    # document. If this CAN'T happen it's likely due to weird Unicode
-                    # stuff so we will just skip the example.
-                    #
-                    # Note that this means for training mode, every example is NOT
-                    # guaranteed to be preserved.
-                    actual_text = " ".join(doc_tokens[start_position:(end_position + 1)])
-                    cleaned_answer_text = " ".join(
-                        whitespace_tokenize(orig_answer_text))
-                    if actual_text.find(cleaned_answer_text) == -1:
-                        logger.warning("Could not find answer: '%s' vs. '%s'",
-                                           actual_text, cleaned_answer_text)
-                        continue
-
+                    #Added in squad 2
+                    if not is_impossible:
+                        answer = qa["answers"][0]
+                        orig_answer_text = answer["text"]
+                        answer_offset = answer["answer_start"]
+                        answer_length = len(orig_answer_text)
+                        start_position = char_to_word_offset[answer_offset]
+                        end_position = char_to_word_offset[answer_offset + answer_length - 1]
+                        # Only add answers where the text can be exactly recovered from the
+                        # document. If this CAN'T happen it's likely due to weird Unicode
+                        # stuff so we will just skip the example.
+                        #
+                        # Note that this means for training mode, every example is NOT
+                        # guaranteed to be preserved.
+                        actual_text = " ".join(doc_tokens[start_position:(end_position + 1)])
+                        cleaned_answer_text = " ".join(
+                            whitespace_tokenize(orig_answer_text))
+                        if actual_text.find(cleaned_answer_text) == -1:
+                            logger.warning("Could not find answer: '%s' vs. '%s'",
+                                               actual_text, cleaned_answer_text)
+                            continue
+                    else:
+                        start_position = -1
+                        end_position = -1
+                        orig_answer_text = ""
                 example = SquadExample(
                     qas_id=qas_id,
                     question_text=question_text,
                     doc_tokens=doc_tokens,
                     orig_answer_text=orig_answer_text,
                     start_position=start_position,
-                    end_position=end_position)
+                    end_position=end_position,
+                    is_impossible=is_impossible)
                 examples.append(example)
     return examples
 
@@ -198,7 +213,13 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length,
 
         tok_start_position = None
         tok_end_position = None
-        if is_training:
+        ###### Added in SQuAD 2.0 ################
+        if is_training and example.is_impossible:
+            tok_start_position = -1
+            tok_end_position = -1
+        ###### Added in SQuAD 2.0 ################
+        
+        if is_training and not example.is_impossible:
             tok_start_position = orig_to_tok_index[example.start_position]
             if example.end_position < len(example.doc_tokens) - 1:
                 tok_end_position = orig_to_tok_index[example.end_position + 1] - 1
@@ -270,7 +291,7 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length,
 
             start_position = None
             end_position = None
-            if is_training:
+            if is_training and not example.is_impossible:
                 # For training, if our document chunk does not contain an annotation
                 # we throw it out, since there is nothing to predict.
                 doc_start = doc_span.start
@@ -283,7 +304,10 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length,
                 doc_offset = len(query_tokens) + 2
                 start_position = tok_start_position - doc_start + doc_offset
                 end_position = tok_end_position - doc_start + doc_offset
-
+            if is_training and example.is_impossible:
+                start_position = 0
+                end_position = 0
+            
             if example_index < 20:
                 logger.info("*** Example ***")
                 logger.info("unique_id: %s" % (unique_id))
@@ -301,7 +325,12 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length,
                     "input_mask: %s" % " ".join([str(x) for x in input_mask]))
                 logger.info(
                     "segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
-                if is_training:
+                ###### Added in SQuAD 2.0 ################
+                if is_training and example.is_impossible:
+                    logger.info("impossible example")
+                ###### Added in SQuAD 2.0 ################
+                
+                if is_training and not example.is_impossible:
                     answer_text = " ".join(tokens[start_position:(end_position + 1)])
                     logger.info("start_position: %d" % (start_position))
                     logger.info("end_position: %d" % (end_position))
@@ -320,7 +349,9 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length,
                     input_mask=input_mask,
                     segment_ids=segment_ids,
                     start_position=start_position,
-                    end_position=end_position))
+                    end_position=end_position,
+                    is_impossible=example.is_impossible
+                    ))
             unique_id += 1
 
     return features
@@ -707,6 +738,8 @@ def main():
                              "bert-large-uncased, bert-base-cased, bert-base-multilingual, bert-base-chinese.")
     parser.add_argument("--output_dir", default=None, type=str, required=True,
                         help="The output directory where the model checkpoints will be written.")
+    parser.add_argument("--do_squad2",  action='store_true', required=True,
+                        help="Indicate whether we are doing SQuAD 2 or not")
 
     ## Other parameters
     parser.add_argument("--train_file", default=None, type=str, help="SQuAD json for training. E.g., train-v1.1.json")
@@ -818,7 +851,7 @@ def main():
     num_train_steps = None
     if args.do_train:
         train_examples = read_squad_examples(
-            input_file=args.train_file, is_training=True)
+            input_file=args.train_file, is_training=True, do_squad2 = args.do_squad2)
         num_train_steps = int(
             len(train_examples) / args.train_batch_size / args.gradient_accumulation_steps * args.num_train_epochs)
 
@@ -915,12 +948,12 @@ def main():
         ep = 0
         for _ in trange(int(args.num_train_epochs), desc="Epoch"):
             batch_count = 0
-            for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):               
+            for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
                 if n_gpu == 1:
                     batch = tuple(t.to(device) for t in batch) # multi-gpu does scattering it-self
                 input_ids, input_mask, segment_ids, start_positions, end_positions = batch
                 loss = model(input_ids, segment_ids, input_mask, start_positions, end_positions)
-                loss_train['Epoch: '+str(ep) + 'Batch: ' + str(batch_count)] = loss
+                loss_train['Epoch: '+str(ep) + 'Batch: ' + str(batch_count)] = loss.item()
                 #loss_temp = loss
                 if n_gpu > 1:
                     loss = loss.mean() # mean() to average on multi-gpu.
@@ -951,9 +984,7 @@ def main():
                     model.zero_grad()
                     batch_count = batch_count + 1
                     global_step += 1
-            
-            torch.save(model.state_dict(), (str(args.output_dir)+ "train_epoch" + str(ep)  + ".json"))
-            ep = ep +1        
+                    
             ##### To create and save loss in evaluation dataset #######################
 #             for step, batch in enumerate(tqdm(eval_dataloader, desc="Iteration")):
 #                 if n_gpu == 1:
@@ -967,6 +998,12 @@ def main():
 
             #Printing File
             #loss_train['epoch: '+str(ep)] = loss_temp
+            torch.save(model.state_dict(), (str(args.output_dir)+ "train_epoch" + str(ep)  + ".json"))
+            ep = ep +1
+            
+        #Write loss history on training
+        with open(str(args.output_dir) + "Loss_Train.txt", "wb") as fp:   #Pickling
+            pickle.dump(loss_train, fp)
             
     if args.do_predict:
         eval_examples = read_squad_examples(
@@ -1034,9 +1071,7 @@ def main():
 #         end_loss = loss_fct(end_logits, end_positions)
 #         total_loss = (start_loss + end_loss) / 2
 
-        #Write loss history on training and evaluation set
-        with open(str(args.output_dir) + "Loss_Train.txt", "wb") as fp:   #Pickling
-            pickle.dump(loss_train, fp)
+        
 
 #         with open(str(args.output_dir) + "Loss_Eval.txt", "wb") as fp:   #Pickling
 #             pickle.dump(loss_eval, fp)

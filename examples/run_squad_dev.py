@@ -30,6 +30,7 @@ from tqdm import tqdm, trange
 
 import numpy as np
 import torch
+from torch.autograd import Variable
 from torch.utils.data import TensorDataset, DataLoader, RandomSampler, SequentialSampler
 from torch.utils.data.distributed import DistributedSampler
 
@@ -104,7 +105,7 @@ class InputFeatures(object):
         self.end_position = end_position
 
 
-def read_squad_examples(input_file, is_training):
+def read_squad_examples(input_file, is_training,x):
     """Read a SQuAD json file into a list of SquadExample."""
     with open(input_file, "r") as reader:
         input_data = json.load(reader)["data"]
@@ -113,7 +114,7 @@ def read_squad_examples(input_file, is_training):
         if c == " " or c == "\t" or c == "\r" or c == "\n" or ord(c) == 0x202F:
             return True
         return False
-
+    #Modify to read 'x' question answer pair since developed dataset has 3 answer pairs
     examples = []
     for entry in input_data:
         for paragraph in entry["paragraphs"]:
@@ -139,10 +140,12 @@ def read_squad_examples(input_file, is_training):
                 end_position = None
                 orig_answer_text = None
                 if is_training:
-                    if len(qa["answers"]) != 1:
-                        raise ValueError(
-                            "For training, each question should have exactly 1 answer.")
-                    answer = qa["answers"][0]
+                    #Remove this part in dev loss evaluating file
+#                     if len(qa["answers"]) != 1:
+#                         raise ValueError(
+#                             "For training, each question should have exactly 1 answer.")
+                    #answer = qa["answers"][0]
+                    answer = qa["answers"][x]
                     orig_answer_text = answer["text"]
                     answer_offset = answer["answer_start"]
                     answer_length = len(orig_answer_text)
@@ -707,6 +710,10 @@ def main():
                              "bert-large-uncased, bert-base-cased, bert-base-multilingual, bert-base-chinese.")
     parser.add_argument("--output_dir", default=None, type=str, required=True,
                         help="The output directory where the model checkpoints will be written.")
+    parser.add_argument("--trained_model", default=None, type=str, required=True,
+                        help="Specify path to trained model required for prediction.")
+    parser.add_argument("--dev_set", default=None, type=str, required=True,
+                        help="Specify the question answer pair inside the dev set.")
 
     ## Other parameters
     parser.add_argument("--train_file", default=None, type=str, help="SQuAD json for training. E.g., train-v1.1.json")
@@ -818,12 +825,15 @@ def main():
     num_train_steps = None
     if args.do_train:
         train_examples = read_squad_examples(
-            input_file=args.train_file, is_training=True)
+            input_file=args.train_file, is_training=True, x=0)
         num_train_steps = int(
             len(train_examples) / args.train_batch_size / args.gradient_accumulation_steps * args.num_train_epochs)
 
     # Prepare model
     model = BertForQuestionAnswering.from_pretrained(args.bert_model)
+    #the_model = TheModelClass(*args, **kwargs)
+    model.load_state_dict(torch.load(args.trained_model))
+    
     if args.fp16:
         model.half()
     model.to(device)
@@ -855,7 +865,7 @@ def main():
     global_step = 0
     loss_train = {}
     loss_eval = {}
-    if args.do_train:
+    if True:
         train_features = convert_examples_to_features(
             examples=train_examples,
             tokenizer=tokenizer,
@@ -910,48 +920,52 @@ def main():
 #         # Process whole batch for evaluation set
 #         eval_dataloader = DataLoader(eval_data, samplereval_sampler, batch_size=len(eval_features))
 #         ##### To create and save loss in evaluation dataset #######################
-
-        model.train()
+        
+        #model.train() 
+        model.eval() # Set to eval instead of training in this develop loss loop
+        torch.no_grad()
         for _ in trange(int(args.num_train_epochs), desc="Epoch"):
             ep = 0
+            loss_eval["Epoch: " + str(ep)] = 0
             for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
                 batch_count = 0
                 if n_gpu == 1:
                     batch = tuple(t.to(device) for t in batch) # multi-gpu does scattering it-self
                 input_ids, input_mask, segment_ids, start_positions, end_positions = batch
                 loss = model(input_ids, segment_ids, input_mask, start_positions, end_positions)
-                loss_train['Epoch: '+str(ep) + 'Batch: ' + str(batch_count)] = loss
-                #loss_temp = loss
-                if n_gpu > 1:
-                    loss = loss.mean() # mean() to average on multi-gpu.
-                if args.fp16 and args.loss_scale != 1.0:
-                    # rescale loss for fp16 training
-                    # see https://docs.nvidia.com/deeplearning/sdk/mixed-precision-training/index.html
-                    loss = loss * args.loss_scale
-                if args.gradient_accumulation_steps > 1:
-                    loss = loss / args.gradient_accumulation_steps
-                loss.backward()
-                if (step + 1) % args.gradient_accumulation_steps == 0:
-                    if args.fp16 or args.optimize_on_cpu:
-                        if args.fp16 and args.loss_scale != 1.0:
-                            # scale down gradients for fp16 training
-                            for param in model.parameters():
-                                if param.grad is not None:
-                                    param.grad.data = param.grad.data / args.loss_scale
-                        is_nan = set_optimizer_params_grad(param_optimizer, model.named_parameters(), test_nan=True)
-                        if is_nan:
-                            logger.info("FP16 TRAINING: Nan in gradients, reducing loss scaling")
-                            args.loss_scale = args.loss_scale / 2
-                            model.zero_grad()
-                            continue
-                        optimizer.step()
-                        copy_optimizer_params_to_model(model.named_parameters(), param_optimizer)
-                    else:
-                        optimizer.step()
-                    model.zero_grad()
-                    batch_count = batch_count + 1
-                    global_step += 1
-                    
+                #logger.info(loss.item())
+                loss_eval["Epoch: " + str(ep)] = loss_eval["Epoch: " + str(ep)] +loss.item()
+                #loss_train['Epoch: '+str(ep) + 'Batch: ' + str(batch_count)] = loss
+#                 if n_gpu > 1:
+#                     loss = loss.mean() # mean() to average on multi-gpu.
+#                 if args.fp16 and args.loss_scale != 1.0:
+#                     # rescale loss for fp16 training
+#                     # see https://docs.nvidia.com/deeplearning/sdk/mixed-precision-training/index.html
+#                     loss = loss * args.loss_scale
+#                 if args.gradient_accumulation_steps > 1:
+#                     loss = loss / args.gradient_accumulation_steps
+#                 loss.backward()
+#                 if (step + 1) % args.gradient_accumulation_steps == 0:
+#                     if args.fp16 or args.optimize_on_cpu:
+#                         if args.fp16 and args.loss_scale != 1.0:
+#                             # scale down gradients for fp16 training
+#                             for param in model.parameters():
+#                                 if param.grad is not None:
+#                                     param.grad.data = param.grad.data / args.loss_scale
+#                         is_nan = set_optimizer_params_grad(param_optimizer, model.named_parameters(), test_nan=True)
+#                         if is_nan:
+#                             logger.info("FP16 TRAINING: Nan in gradients, reducing loss scaling")
+#                             args.loss_scale = args.loss_scale / 2
+#                             model.zero_grad()
+#                             continue
+#                         optimizer.step()
+#                         copy_optimizer_params_to_model(model.named_parameters(), param_optimizer)
+#                     else:
+#                         optimizer.step()
+                model.zero_grad()
+                batch_count = batch_count + 1
+                global_step += 1
+            loss_eval["Epoch: " + str(ep)] =loss_eval["Epoch: " + str(ep)]/len(train_features)        
             ##### To create and save loss in evaluation dataset #######################
 #             for step, batch in enumerate(tqdm(eval_dataloader, desc="Iteration")):
 #                 if n_gpu == 1:
@@ -965,13 +979,14 @@ def main():
 
             #Printing File
             #loss_train['epoch: '+str(ep)] = loss_temp
-            torch.save(model.state_dict(), (str(args.output_dir)+ "train_epoch" + str(ep)  + ".json"))
+            #torch.save(model.state_dict(), (str(args.output_dir)+ "train_epoch" + str(ep)  + ".json"))
             ep = ep +1
         
-            
+    with open(str(args.output_dir) + "Loss_Eval" + str(args.dev_set) + ".pickle", "wb") as fp:   #Pickling
+            pickle.dump(loss_eval, fp)      
         
 
-    if args.do_predict:
+    if False: # Likely not gonna need it for loss calculation
         eval_examples = read_squad_examples(
             input_file=args.predict_file, is_training=False)
         eval_features = convert_examples_to_features(
@@ -1031,15 +1046,14 @@ def main():
                           output_nbest_file, args.verbose_logging)        
         
         #To compute total loss in evaluation dataset
-        from torch.nn import CrossEntropyLoss
-        loss_fct = CrossEntropyLoss(ignore_index=ignored_index)
-        start_loss = loss_fct(start_logits, start_positions)
-        end_loss = loss_fct(end_logits, end_positions)
-        total_loss = (start_loss + end_loss) / 2
+#         from torch.nn import CrossEntropyLoss
+#         loss_fct = CrossEntropyLoss(ignore_index=ignored_index)
+#         start_loss = loss_fct(start_logits, start_positions)
+#         end_loss = loss_fct(end_logits, end_positions)
+#         total_loss = (start_loss + end_loss) / 2
 
         #Write loss history on training and evaluation set
-        with open(str(args.output_dir) + "Loss_Train.txt", "wb") as fp:   #Pickling
-            pickle.dump(loss_train, fp)
+        
 
 #         with open(str(args.output_dir) + "Loss_Eval.txt", "wb") as fp:   #Pickling
 #             pickle.dump(loss_eval, fp)
