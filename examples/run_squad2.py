@@ -841,8 +841,8 @@ def main():
             raise ValueError(
                 "If `do_predict` is True, then `predict_file` must be specified.")
 
-    if os.path.exists(args.output_dir) and os.listdir(args.output_dir):
-        raise ValueError("Output directory () already exists and is not empty.")
+#     if os.path.exists(args.output_dir) and os.listdir(args.output_dir):
+#         raise ValueError("Output directory () already exists and is not empty.")
     os.makedirs(args.output_dir, exist_ok=True)
 
     tokenizer = BertTokenizer.from_pretrained(args.bert_model)
@@ -1007,7 +1007,7 @@ def main():
             
     if args.do_predict:
         eval_examples = read_squad_examples(
-            input_file=args.predict_file, is_training=False)
+            input_file=args.predict_file, is_training=False,do_squad2 = args.do_squad2)
         eval_features = convert_examples_to_features(
             examples=eval_examples,
             tokenizer=tokenizer,
