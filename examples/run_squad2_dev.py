@@ -30,6 +30,7 @@ from tqdm import tqdm, trange
 
 import numpy as np
 import torch
+from torch.autograd import Variable
 from torch.utils.data import TensorDataset, DataLoader, RandomSampler, SequentialSampler
 from torch.utils.data.distributed import DistributedSampler
 
@@ -53,7 +54,7 @@ class SquadExample(object):
                  orig_answer_text=None,
                  start_position=None,
                  end_position=None,
-                is_impossible=None):
+                 is_impossible=None):
         self.qas_id = qas_id
         self.question_text = question_text
         self.doc_tokens = doc_tokens
@@ -61,7 +62,7 @@ class SquadExample(object):
         self.start_position = start_position
         self.end_position = end_position
         self.is_impossible = is_impossible
-
+        
     def __str__(self):
         return self.__repr__()
 
@@ -106,10 +107,8 @@ class InputFeatures(object):
         self.start_position = start_position
         self.end_position = end_position
         self.is_impossible = is_impossible
-        #self.answerable = answerable #For binary classification
 
-
-def read_squad_examples(input_file, is_training, do_squad2):
+def read_squad_examples(input_file, is_training,x,do_squad2):
     """Read a SQuAD json file into a list of SquadExample."""
     with open(input_file, "r") as reader:
         input_data = json.load(reader)["data"]
@@ -118,7 +117,7 @@ def read_squad_examples(input_file, is_training, do_squad2):
         if c == " " or c == "\t" or c == "\r" or c == "\n" or ord(c) == 0x202F:
             return True
         return False
-
+    #Modify to read 'x' question answer pair since developed dataset has 3 answer pairs
     examples = []
     for entry in input_data:
         for paragraph in entry["paragraphs"]:
@@ -143,17 +142,16 @@ def read_squad_examples(input_file, is_training, do_squad2):
                 start_position = None
                 end_position = None
                 orig_answer_text = None
-                is_impossible = None
                 if is_training:
+                    #Remove this part in dev loss evaluating file
+#                     if len(qa["answers"]) != 1:
+#                         raise ValueError(
+#                             "For training, each question should have exactly 1 answer.")
                     if do_squad2:
                         is_impossible = qa["is_impossible"]
-                        #print(is_impossible)
-                    if len(qa["answers"]) != 1 and (not is_impossible):
-                        raise ValueError(
-                            "For training, each question should have exactly 1 answer.")
-                    #Added in squad 2
+                    #answer = qa["answers"][0]
                     if not is_impossible:
-                        answer = qa["answers"][0]
+                        answer = qa["answers"][x]
                         orig_answer_text = answer["text"]
                         answer_offset = answer["answer_start"]
                         answer_length = len(orig_answer_text)
@@ -176,6 +174,7 @@ def read_squad_examples(input_file, is_training, do_squad2):
                         start_position = -1
                         end_position = -1
                         orig_answer_text = ""
+                        
                 example = SquadExample(
                     qas_id=qas_id,
                     question_text=question_text,
@@ -189,7 +188,7 @@ def read_squad_examples(input_file, is_training, do_squad2):
 
 
 def convert_examples_to_features(examples, tokenizer, max_seq_length,
-                                 doc_stride, max_query_length, is_training):
+                                 doc_stride, max_query_length, is_training,do_squad2):
     """Loads a data file into a list of `InputBatch`s."""
 
     unique_id = 1000000000
@@ -304,10 +303,11 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length,
                 doc_offset = len(query_tokens) + 2
                 start_position = tok_start_position - doc_start + doc_offset
                 end_position = tok_end_position - doc_start + doc_offset
+                
             if is_training and example.is_impossible:
                 start_position = 0
                 end_position = 0
-            
+                
             if example_index < 20:
                 logger.info("*** Example ***")
                 logger.info("unique_id: %s" % (unique_id))
@@ -325,12 +325,7 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length,
                     "input_mask: %s" % " ".join([str(x) for x in input_mask]))
                 logger.info(
                     "segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
-                ###### Added in SQuAD 2.0 ################
-                if is_training and example.is_impossible:
-                    logger.info("impossible example")
-                ###### Added in SQuAD 2.0 ################
-                
-                if is_training and not example.is_impossible:
+                if is_training:
                     answer_text = " ".join(tokens[start_position:(end_position + 1)])
                     logger.info("start_position: %d" % (start_position))
                     logger.info("end_position: %d" % (end_position))
@@ -438,7 +433,7 @@ RawResult = collections.namedtuple("RawResult",
 
 def write_predictions(all_examples, all_features, all_results, n_best_size,
                       max_answer_length, do_lower_case, output_prediction_file,
-                      output_nbest_file, verbose_logging, do_squad2):
+                      output_nbest_file, verbose_logging):
     """Write final predictions to the json file."""
     logger.info("Writing predictions to: %s" % (output_prediction_file))
     logger.info("Writing nbest to: %s" % (output_nbest_file))
@@ -457,49 +452,20 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
 
     all_predictions = collections.OrderedDict()
     all_nbest_json = collections.OrderedDict()
-    scores_diff_json = collections.OrderedDict()
-    
     for (example_index, example) in enumerate(all_examples):
         features = example_index_to_features[example_index]
 
         prelim_predictions = []
-#         # keep track of the minimum score of null start+end of position 0 (From Google)
-#         score_null = 1000000  # large and positive
-#         min_null_feature_index = 0  # the paragraph slice with min mull score
-#         null_start_logit = 0  # the start logit at the slice with min null score
-#         null_end_logit = 0  # the end logit at the slice with min null score
         for (feature_index, feature) in enumerate(features):
             result = unique_id_to_result[feature.unique_id]
+
             start_indexes = _get_best_indexes(result.start_logits, n_best_size)
             end_indexes = _get_best_indexes(result.end_logits, n_best_size)
-            
-#             # if we could have irrelevant answers, get the min score of irrelevant
-#             if do_squad2:
-#                 feature_null_score = result.start_logits[0] + result.end_logits[0]
-#                 if feature_null_score < score_null:
-#                     score_null = feature_null_score
-#                     min_null_feature_index = feature_index
-#                     null_start_logit = result.start_logits[0]
-#                     null_end_logit = result.end_logits[0]
-                
             for start_index in start_indexes:
                 for end_index in end_indexes:
                     # We could hypothetically create invalid predictions, e.g., predict
                     # that the start of the span is in the question. We throw out all
                     # invalid predictions.
-                    
-                    #Add by Theerit, if start index and end index are negative override to be unanswerable
-                    if start_index < 0 and end_index < 0:
-                        prelim_predictions.append(
-                        _PrelimPrediction(
-                            feature_index=feature_index,
-                            start_index=0,
-                            end_index=0,
-                            start_logit=result.start_logits[start_index],
-                            end_logit=result.end_logits[end_index]))
-                        continue
-                    #Add by Theerit, if start index and end index are negative override to be unanswerable'
-                    
                     if start_index >= len(feature.tokens):
                         continue
                     if end_index >= len(feature.tokens):
@@ -522,17 +488,7 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
                             end_index=end_index,
                             start_logit=result.start_logits[start_index],
                             end_logit=result.end_logits[end_index]))
-                    
-#         #Add from google Bert github 
-#         if do_squad2:
-#             prelim_predictions.append(
-#           _PrelimPrediction(
-#               feature_index=min_null_feature_index,
-#               start_index=0,
-#               end_index=0,
-#               start_logit=null_start_logit,
-#               end_logit=null_end_logit))
-                
+
         prelim_predictions = sorted(
             prelim_predictions,
             key=lambda x: (x.start_logit + x.end_logit),
@@ -547,33 +503,27 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
             if len(nbest) >= n_best_size:
                 break
             feature = features[pred.feature_index]
-            
-            if pred.start_index > 0:  # this is a non-null prediction added in squad2
-                tok_tokens = feature.tokens[pred.start_index:(pred.end_index + 1)]
-                orig_doc_start = feature.token_to_orig_map[pred.start_index]
-                orig_doc_end = feature.token_to_orig_map[pred.end_index]
-                orig_tokens = example.doc_tokens[orig_doc_start:(orig_doc_end + 1)]
-                tok_text = " ".join(tok_tokens)
 
-                # De-tokenize WordPieces that have been split off.
-                tok_text = tok_text.replace(" ##", "")
-                tok_text = tok_text.replace("##", "")
+            tok_tokens = feature.tokens[pred.start_index:(pred.end_index + 1)]
+            orig_doc_start = feature.token_to_orig_map[pred.start_index]
+            orig_doc_end = feature.token_to_orig_map[pred.end_index]
+            orig_tokens = example.doc_tokens[orig_doc_start:(orig_doc_end + 1)]
+            tok_text = " ".join(tok_tokens)
 
-                # Clean whitespace
-                tok_text = tok_text.strip()
-                tok_text = " ".join(tok_text.split())
-                orig_text = " ".join(orig_tokens)
+            # De-tokenize WordPieces that have been split off.
+            tok_text = tok_text.replace(" ##", "")
+            tok_text = tok_text.replace("##", "")
 
-                final_text = get_final_text(tok_text, orig_text, do_lower_case, verbose_logging)
-                if final_text in seen_predictions:
-                    continue
-                
-                seen_predictions[final_text] = True
-            
-            else: # Added in Squad 2, unanswerable questions
-                final_text = ""
-                seen_predictions[final_text] = True 
-            
+            # Clean whitespace
+            tok_text = tok_text.strip()
+            tok_text = " ".join(tok_text.split())
+            orig_text = " ".join(orig_tokens)
+
+            final_text = get_final_text(tok_text, orig_text, do_lower_case, verbose_logging)
+            if final_text in seen_predictions:
+                continue
+
+            seen_predictions[final_text] = True
             nbest.append(
                 _NbestPrediction(
                     text=final_text,
@@ -785,6 +735,10 @@ def main():
                         help="The output directory where the model checkpoints will be written.")
     parser.add_argument("--do_squad2",  action='store_true', required=True,
                         help="Indicate whether we are doing SQuAD 2 or not")
+    parser.add_argument("--trained_model", default=None, type=str, required=True,
+                        help="Specify path to trained model required for prediction.")
+    parser.add_argument("--dev_set", default=None, type=str, required=True,
+                        help="Specify the question answer pair inside the dev set.")
 
     ## Other parameters
     parser.add_argument("--train_file", default=None, type=str, help="SQuAD json for training. E.g., train-v1.1.json")
@@ -896,12 +850,15 @@ def main():
     num_train_steps = None
     if args.do_train:
         train_examples = read_squad_examples(
-            input_file=args.train_file, is_training=True, do_squad2 = args.do_squad2)
+            input_file=args.train_file, is_training=True, x=0, do_squad2=args.do_squad2)
         num_train_steps = int(
             len(train_examples) / args.train_batch_size / args.gradient_accumulation_steps * args.num_train_epochs)
 
     # Prepare model
     model = BertForQuestionAnswering.from_pretrained(args.bert_model)
+    #the_model = TheModelClass(*args, **kwargs)
+    model.load_state_dict(torch.load(args.trained_model))
+    
     if args.fp16:
         model.half()
     model.to(device)
@@ -933,14 +890,14 @@ def main():
     global_step = 0
     loss_train = {}
     loss_eval = {}
-    if args.do_train:
+    if True:
         train_features = convert_examples_to_features(
             examples=train_examples,
             tokenizer=tokenizer,
             max_seq_length=args.max_seq_length,
             doc_stride=args.doc_stride,
             max_query_length=args.max_query_length,
-            is_training=True)
+            is_training=True, do_squad2 = args.do_squad2)
         logger.info("***** Running training *****")
         logger.info("  Num orig examples = %d", len(train_examples))
         logger.info("  Num split examples = %d", len(train_features))
@@ -988,48 +945,53 @@ def main():
 #         # Process whole batch for evaluation set
 #         eval_dataloader = DataLoader(eval_data, samplereval_sampler, batch_size=len(eval_features))
 #         ##### To create and save loss in evaluation dataset #######################
-
-        model.train()
-        ep = 0
+        
+        #model.train() 
+        model.eval() # Set to eval instead of training in this develop loss loop
+        torch.no_grad()
         for _ in trange(int(args.num_train_epochs), desc="Epoch"):
-            batch_count = 0
+            ep = 0
+            loss_eval["Epoch: " + str(ep)] = 0
             for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
+                batch_count = 0
                 if n_gpu == 1:
                     batch = tuple(t.to(device) for t in batch) # multi-gpu does scattering it-self
                 input_ids, input_mask, segment_ids, start_positions, end_positions = batch
                 loss = model(input_ids, segment_ids, input_mask, start_positions, end_positions)
-                loss_train['Epoch: '+str(ep) + 'Batch: ' + str(batch_count)] = loss.item()
-                #loss_temp = loss
-                if n_gpu > 1:
-                    loss = loss.mean() # mean() to average on multi-gpu.
-                if args.fp16 and args.loss_scale != 1.0:
-                    # rescale loss for fp16 training
-                    # see https://docs.nvidia.com/deeplearning/sdk/mixed-precision-training/index.html
-                    loss = loss * args.loss_scale
-                if args.gradient_accumulation_steps > 1:
-                    loss = loss / args.gradient_accumulation_steps
-                loss.backward()
-                if (step + 1) % args.gradient_accumulation_steps == 0:
-                    if args.fp16 or args.optimize_on_cpu:
-                        if args.fp16 and args.loss_scale != 1.0:
-                            # scale down gradients for fp16 training
-                            for param in model.parameters():
-                                if param.grad is not None:
-                                    param.grad.data = param.grad.data / args.loss_scale
-                        is_nan = set_optimizer_params_grad(param_optimizer, model.named_parameters(), test_nan=True)
-                        if is_nan:
-                            logger.info("FP16 TRAINING: Nan in gradients, reducing loss scaling")
-                            args.loss_scale = args.loss_scale / 2
-                            model.zero_grad()
-                            continue
-                        optimizer.step()
-                        copy_optimizer_params_to_model(model.named_parameters(), param_optimizer)
-                    else:
-                        optimizer.step()
-                    model.zero_grad()
-                    batch_count = batch_count + 1
-                    global_step += 1
-                    
+                #logger.info(loss.item())
+                loss_eval["Epoch: " + str(ep)] = loss_eval["Epoch: " + str(ep)] +loss.item()
+                #loss_train['Epoch: '+str(ep) + 'Batch: ' + str(batch_count)] = loss
+#                 if n_gpu > 1:
+#                     loss = loss.mean() # mean() to average on multi-gpu.
+#                 if args.fp16 and args.loss_scale != 1.0:
+#                     # rescale loss for fp16 training
+#                     # see https://docs.nvidia.com/deeplearning/sdk/mixed-precision-training/index.html
+#                     loss = loss * args.loss_scale
+#                 if args.gradient_accumulation_steps > 1:
+#                     loss = loss / args.gradient_accumulation_steps
+#                 loss.backward()
+#                 if (step + 1) % args.gradient_accumulation_steps == 0:
+#                     if args.fp16 or args.optimize_on_cpu:
+#                         if args.fp16 and args.loss_scale != 1.0:
+#                             # scale down gradients for fp16 training
+#                             for param in model.parameters():
+#                                 if param.grad is not None:
+#                                     param.grad.data = param.grad.data / args.loss_scale
+#                         is_nan = set_optimizer_params_grad(param_optimizer, model.named_parameters(), test_nan=True)
+#                         if is_nan:
+#                             logger.info("FP16 TRAINING: Nan in gradients, reducing loss scaling")
+#                             args.loss_scale = args.loss_scale / 2
+#                             model.zero_grad()
+#                             continue
+#                         optimizer.step()
+#                         copy_optimizer_params_to_model(model.named_parameters(), param_optimizer)
+#                     else:
+#                         optimizer.step()
+                model.zero_grad()
+                batch_count = batch_count + 1
+                global_step += 1
+            #loss_eval["Epoch: " + str(ep)] =loss_eval["Epoch: " + str(ep)]/len(train_features)        
+            loss_eval["Epoch: " + str(ep)] =loss_eval["Epoch: " + str(ep)]/global_step        
             ##### To create and save loss in evaluation dataset #######################
 #             for step, batch in enumerate(tqdm(eval_dataloader, desc="Iteration")):
 #                 if n_gpu == 1:
@@ -1043,16 +1005,16 @@ def main():
 
             #Printing File
             #loss_train['epoch: '+str(ep)] = loss_temp
-            torch.save(model.state_dict(), (str(args.output_dir)+ "train_epoch" + str(ep)  + ".json"))
+            #torch.save(model.state_dict(), (str(args.output_dir)+ "train_epoch" + str(ep)  + ".json"))
             ep = ep +1
-            
-        #Write loss history on training
-        with open(str(args.output_dir) + "Loss_Train.txt", "wb") as fp:   #Pickling
-            pickle.dump(loss_train, fp)
-            
-    if args.do_predict:
+        
+    with open(str(args.output_dir) + str(args.trained_model[13:-5]) + "_Loss_Eval_Dev_" + str(args.dev_set) + ".pickle", "wb") as fp:   #Pickling
+            pickle.dump(loss_eval, fp)      
+        
+
+    if False: # Likely not gonna need it for loss calculation
         eval_examples = read_squad_examples(
-            input_file=args.predict_file, is_training=False,do_squad2 = args.do_squad2)
+            input_file=args.predict_file, is_training=False)
         eval_features = convert_examples_to_features(
             examples=eval_examples,
             tokenizer=tokenizer,
@@ -1104,10 +1066,10 @@ def main():
                                              end_logits=end_logits))
         output_prediction_file = os.path.join(args.output_dir, "predictions.json")
         output_nbest_file = os.path.join(args.output_dir, "nbest_predictions.json")
-        write_predictions(eval_examples, eval_features, all_results,
-                          args.n_best_size, args.max_answer_length,
-                          args.do_lower_case, output_prediction_file,
-                          output_nbest_file, args.verbose_logging)        
+#         write_predictions(eval_examples, eval_features, all_results,
+#                           args.n_best_size, args.max_answer_length,
+#                           args.do_lower_case, output_prediction_file,
+#                           output_nbest_file, args.verbose_logging)        
         
         #To compute total loss in evaluation dataset
 #         from torch.nn import CrossEntropyLoss
@@ -1116,6 +1078,7 @@ def main():
 #         end_loss = loss_fct(end_logits, end_positions)
 #         total_loss = (start_loss + end_loss) / 2
 
+        #Write loss history on training and evaluation set
         
 
 #         with open(str(args.output_dir) + "Loss_Eval.txt", "wb") as fp:   #Pickling
