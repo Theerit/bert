@@ -150,7 +150,8 @@ def read_squad_examples(input_file, is_training,x,do_squad2):
                     if do_squad2:
                         is_impossible = qa["is_impossible"]
                     #answer = qa["answers"][0]
-                    if not is_impossible:
+                    if not is_impossible and len(qa["answers"])-1 >= x:
+                        #print((qa["answers"]))
                         answer = qa["answers"][x]
                         orig_answer_text = answer["text"]
                         answer_offset = answer["answer_start"]
@@ -737,7 +738,7 @@ def main():
                         help="Indicate whether we are doing SQuAD 2 or not")
     parser.add_argument("--trained_model", default=None, type=str, required=True,
                         help="Specify path to trained model required for prediction.")
-    parser.add_argument("--dev_set", default=None, type=str, required=True,
+    parser.add_argument("--dev_set", default=None, type=int, required=True,
                         help="Specify the question answer pair inside the dev set.")
 
     ## Other parameters
@@ -850,7 +851,7 @@ def main():
     num_train_steps = None
     if args.do_train:
         train_examples = read_squad_examples(
-            input_file=args.train_file, is_training=True, x=0, do_squad2=args.do_squad2)
+            input_file=args.train_file, is_training=True, x=args.dev_set, do_squad2=args.do_squad2)
         num_train_steps = int(
             len(train_examples) / args.train_batch_size / args.gradient_accumulation_steps * args.num_train_epochs)
 
