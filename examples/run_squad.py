@@ -920,7 +920,7 @@ def main():
                     batch = tuple(t.to(device) for t in batch) # multi-gpu does scattering it-self
                 input_ids, input_mask, segment_ids, start_positions, end_positions = batch
                 loss = model(input_ids, segment_ids, input_mask, start_positions, end_positions)
-                loss_train['Epoch: '+str(ep) + 'Batch: ' + str(batch_count)] = loss
+                loss_train['Epoch: '+str(ep) + 'Batch: ' + str(batch_count)] = loss.item()
                 #loss_temp = loss
                 if n_gpu > 1:
                     loss = loss.mean() # mean() to average on multi-gpu.
