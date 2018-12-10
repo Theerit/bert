@@ -27,6 +27,10 @@ import os
 import random
 import pickle
 from tqdm import tqdm, trange
+import pdb
+#import inspect
+import sys
+
 
 import numpy as np
 import torch
@@ -35,7 +39,11 @@ from torch.utils.data.distributed import DistributedSampler
 
 from pytorch_pretrained_bert.tokenization import printable_text, whitespace_tokenize, BasicTokenizer, BertTokenizer
 from pytorch_pretrained_bert.modeling import BertForQuestionAnswering
+#import os
+#sys.path.append(os.path.abspath("/home/theerit/theerit/pytorch-pretrained-BERT/pytorch_pretrained_bert"))
+#from modeling_binary import BertForQuestionAnswering
 from pytorch_pretrained_bert.optimization import BertAdam
+#print(inspect.getfile(BertForQuestionAnswering))
 
 logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(message)s', 
                     datefmt = '%m/%d/%Y %H:%M:%S',
@@ -53,7 +61,8 @@ class SquadExample(object):
                  orig_answer_text=None,
                  start_position=None,
                  end_position=None,
-                is_impossible=None):
+                 is_impossible=None,
+                 unanswerable=None):
         self.qas_id = qas_id
         self.question_text = question_text
         self.doc_tokens = doc_tokens
@@ -61,6 +70,7 @@ class SquadExample(object):
         self.start_position = start_position
         self.end_position = end_position
         self.is_impossible = is_impossible
+        self.unanswerable = unanswerable
 
     def __str__(self):
         return self.__repr__()
@@ -93,7 +103,9 @@ class InputFeatures(object):
                  segment_ids,
                  start_position=None,
                  end_position=None,
-                 is_impossible=None):
+                 is_impossible=None,
+                 unanswerable=None
+                ):
         self.unique_id = unique_id
         self.example_index = example_index
         self.doc_span_index = doc_span_index
@@ -106,7 +118,7 @@ class InputFeatures(object):
         self.start_position = start_position
         self.end_position = end_position
         self.is_impossible = is_impossible
-        #self.answerable = answerable #For binary classification
+        self.unanswerable = unanswerable #For binary classification
 
 
 def read_squad_examples(input_file, is_training, do_squad2):
@@ -120,7 +132,12 @@ def read_squad_examples(input_file, is_training, do_squad2):
         return False
 
     examples = []
+    #Added for scaling code down
+    #count_train = 0
     for entry in input_data:
+        #count_train = count_train+1
+        #if count_train ==1000:
+        #    break
         for paragraph in entry["paragraphs"]:
             paragraph_text = paragraph["context"]
             doc_tokens = []
@@ -144,6 +161,7 @@ def read_squad_examples(input_file, is_training, do_squad2):
                 end_position = None
                 orig_answer_text = None
                 is_impossible = None
+                unanswerable = 0
                 if is_training:
                     if do_squad2:
                         is_impossible = qa["is_impossible"]
@@ -176,6 +194,7 @@ def read_squad_examples(input_file, is_training, do_squad2):
                         start_position = -1
                         end_position = -1
                         orig_answer_text = ""
+                        unanswerable = 1
                 example = SquadExample(
                     qas_id=qas_id,
                     question_text=question_text,
@@ -183,7 +202,9 @@ def read_squad_examples(input_file, is_training, do_squad2):
                     orig_answer_text=orig_answer_text,
                     start_position=start_position,
                     end_position=end_position,
-                    is_impossible=is_impossible)
+                    is_impossible=is_impossible,
+                    unanswerable = unanswerable
+                    )
                 examples.append(example)
     return examples
 
@@ -350,7 +371,8 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length,
                     segment_ids=segment_ids,
                     start_position=start_position,
                     end_position=end_position,
-                    is_impossible=example.is_impossible
+                    is_impossible=example.is_impossible,
+                    unanswerable = example.unanswerable
                     ))
             unique_id += 1
 
@@ -901,7 +923,7 @@ def main():
             len(train_examples) / args.train_batch_size / args.gradient_accumulation_steps * args.num_train_epochs)
 
     # Prepare model
-    model = BertForQuestionAnswering.from_pretrained(args.bert_model)
+    model = BertForQuestionAnswering.from_pretrained(args.bert_model,args.max_seq_length)
     if args.fp16:
         model.half()
     model.to(device)
@@ -951,8 +973,11 @@ def main():
         all_segment_ids = torch.tensor([f.segment_ids for f in train_features], dtype=torch.long)
         all_start_positions = torch.tensor([f.start_position for f in train_features], dtype=torch.long)
         all_end_positions = torch.tensor([f.end_position for f in train_features], dtype=torch.long)
+        #Modified in binary classification model
+        all_unanswerables = torch.tensor([f.unanswerable for f in train_features], dtype=torch.long)
+        #pdb.set_trace()
         train_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids,
-                                   all_start_positions, all_end_positions)
+                                   all_start_positions, all_end_positions, all_unanswerables)
         if args.local_rank == -1:
             train_sampler = RandomSampler(train_data)
         else:
@@ -996,8 +1021,9 @@ def main():
             for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
                 if n_gpu == 1:
                     batch = tuple(t.to(device) for t in batch) # multi-gpu does scattering it-self
-                input_ids, input_mask, segment_ids, start_positions, end_positions = batch
-                loss = model(input_ids, segment_ids, input_mask, start_positions, end_positions)
+                input_ids, input_mask, segment_ids, start_positions, end_positions, unanswerables = batch
+                #pdb.set_trace()
+                loss = model(input_ids, segment_ids, input_mask, start_positions, end_positions,unanswerables=unanswerables,max_seq_length = args.max_seq_length)
                 loss_train['Epoch: '+str(ep) + 'Batch: ' + str(batch_count)] = loss.item()
                 #loss_temp = loss
                 if n_gpu > 1:
