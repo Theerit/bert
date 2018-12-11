@@ -1017,13 +1017,15 @@ class BertForQuestionAnswering(PreTrainedBertModel):
         start_logits = start_logits.squeeze(-1)
         end_logits = end_logits.squeeze(-1)
        
-        #Added in Binary Classification Model, Sum of all output to represent class        
+        #Added in Binary Classification Model, Sum of all output to represent class
+        #pdb.set_trace()
         answerable_outputs = self.binary_outputs(sequence_output).view(-1,max_seq_length*2)
         #pdb.set_trace()
         #answerable_outputs = self.binary_answers(answerable_outputs.squeeze(2,-1))
         answerable_outputs = self.binary_answers(answerable_outputs)
+        #answerable_logits, unanswerable_logits = answerable_outputs.split(1,dim=-1)
         #answerable_outputs = answerable_outputs.squeeze(2,-1)
-        print(answerable_outputs)
+        #print(answerable_outputs)
         #answerable_outputs = m_temp(torch.sum(self.binary_outputs(sequence_output))[0])
         #print(answerable_outputs)
 
@@ -1042,10 +1044,10 @@ class BertForQuestionAnswering(PreTrainedBertModel):
             loss_binary = CrossEntropyLoss()
             start_loss = loss_fct(start_logits, start_positions)
             end_loss = loss_fct(end_logits, end_positions)
-            print(unanswerables)
+            #print(answerable_outputs)
             #pdb.set_trace()
             class_loss = loss_binary(answerable_outputs, unanswerables)
             total_loss = 0.8* ((start_loss + end_loss) / 2) + 0.2*class_loss 
             return total_loss
         else:
-            return start_logits, end_logits
+            return start_logits, end_logits, answerable_outputs

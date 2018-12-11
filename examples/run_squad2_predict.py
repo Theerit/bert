@@ -27,10 +27,10 @@ import os
 import random
 import pickle
 from tqdm import tqdm, trange
+import pdb
 
 import numpy as np
 import torch
-from torch.autograd import Variable
 from torch.utils.data import TensorDataset, DataLoader, RandomSampler, SequentialSampler
 from torch.utils.data.distributed import DistributedSampler
 
@@ -113,7 +113,7 @@ class InputFeatures(object):
         self.is_impossible = is_impossible
         self.unanswerable = unanswerable #For binary classification
 
-def read_squad_examples(input_file, is_training,x,do_squad2):
+def read_squad_examples(input_file, is_training,do_squad2):
     """Read a SQuAD json file into a list of SquadExample."""
     with open(input_file, "r") as reader:
         input_data = json.load(reader)["data"]
@@ -157,9 +157,9 @@ def read_squad_examples(input_file, is_training,x,do_squad2):
                     if do_squad2:
                         is_impossible = qa["is_impossible"]
                     #answer = qa["answers"][0]
-                    if not is_impossible and len(qa["answers"])-1 >= x:
+                    if not is_impossible:
                         #print((qa["answers"]))
-                        answer = qa["answers"][x]
+                        answer = qa["answers"][0]
                         orig_answer_text = answer["text"]
                         answer_offset = answer["answer_start"]
                         answer_length = len(orig_answer_text)
@@ -445,7 +445,7 @@ RawResult = collections.namedtuple("RawResult",
 
 def write_predictions(all_examples, all_features, all_results, n_best_size,
                       max_answer_length, do_lower_case, output_prediction_file,
-                      output_nbest_file, verbose_logging):
+                      output_nbest_file, verbose_logging, do_squad2):
     """Write final predictions to the json file."""
     logger.info("Writing predictions to: %s" % (output_prediction_file))
     logger.info("Writing nbest to: %s" % (output_nbest_file))
@@ -464,20 +464,51 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
 
     all_predictions = collections.OrderedDict()
     all_nbest_json = collections.OrderedDict()
+    scores_diff_json = collections.OrderedDict()
+    
     for (example_index, example) in enumerate(all_examples):
         features = example_index_to_features[example_index]
 
         prelim_predictions = []
+#         # keep track of the minimum score of null start+end of position 0 (From Google)
+#         score_null = 1000000  # large and positive
+#         min_null_feature_index = 0  # the paragraph slice with min mull score
+#         null_start_logit = 0  # the start logit at the slice with min null score
+#         null_end_logit = 0  # the end logit at the slice with min null score
         for (feature_index, feature) in enumerate(features):
             result = unique_id_to_result[feature.unique_id]
-
             start_indexes = _get_best_indexes(result.start_logits, n_best_size)
             end_indexes = _get_best_indexes(result.end_logits, n_best_size)
+            
+#             # if we could have irrelevant answers, get the min score of irrelevant
+#             if do_squad2:
+#                 feature_null_score = result.start_logits[0] + result.end_logits[0]
+#                 if feature_null_score < score_null:
+#                     score_null = feature_null_score
+#                     min_null_feature_index = feature_index
+#                     null_start_logit = result.start_logits[0]
+#                     null_end_logit = result.end_logits[0]
+                
             for start_index in start_indexes:
                 for end_index in end_indexes:
                     # We could hypothetically create invalid predictions, e.g., predict
                     # that the start of the span is in the question. We throw out all
                     # invalid predictions.
+                    
+                    #Add by Theerit, if start index and end index are negative override to be unanswerable
+                    if start_index <= 0 and end_index <= 0:
+                        prelim_predictions.append(
+                        _PrelimPrediction(
+                            feature_index=feature_index,
+                            start_index=0,
+                            end_index=0,
+                            start_logit=result.start_logits[start_index],
+                            end_logit=result.end_logits[end_index],
+                            unanswerable_logit=result.answerable_outputs
+                        ))
+                        continue
+                    #Add by Theerit, if start index and end index are negative override to be unanswerable'
+                    
                     if start_index >= len(feature.tokens):
                         continue
                     if end_index >= len(feature.tokens):
@@ -499,11 +530,23 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
                             start_index=start_index,
                             end_index=end_index,
                             start_logit=result.start_logits[start_index],
-                            end_logit=result.end_logits[end_index]))
-
+                            end_logit=result.end_logits[end_index],
+                            unanswerable_logit=result.answerable_outputs
+                        ))
+                    
+#         #Add from google Bert github 
+#         if do_squad2:
+#             prelim_predictions.append(
+#           _PrelimPrediction(
+#               feature_index=min_null_feature_index,
+#               start_index=0,
+#               end_index=0,
+#               start_logit=null_start_logit,
+#               end_logit=null_end_logit))
+                
         prelim_predictions = sorted(
             prelim_predictions,
-            key=lambda x: (x.start_logit + x.end_logit),
+            key=lambda x: 0.8*(x.start_logit + x.end_logit) + 0.2*x.unanswerable_logit,
             reverse=True)
 
         _NbestPrediction = collections.namedtuple(  # pylint: disable=invalid-name
@@ -515,27 +558,33 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
             if len(nbest) >= n_best_size:
                 break
             feature = features[pred.feature_index]
+            
+            if pred.start_index > 0 and pred.unanswerable_logit[0] > pred.unanswerable_logit[1]:  # this is a non-null prediction added in squad2
+                tok_tokens = feature.tokens[pred.start_index:(pred.end_index + 1)]
+                orig_doc_start = feature.token_to_orig_map[pred.start_index]
+                orig_doc_end = feature.token_to_orig_map[pred.end_index]
+                orig_tokens = example.doc_tokens[orig_doc_start:(orig_doc_end + 1)]
+                tok_text = " ".join(tok_tokens)
 
-            tok_tokens = feature.tokens[pred.start_index:(pred.end_index + 1)]
-            orig_doc_start = feature.token_to_orig_map[pred.start_index]
-            orig_doc_end = feature.token_to_orig_map[pred.end_index]
-            orig_tokens = example.doc_tokens[orig_doc_start:(orig_doc_end + 1)]
-            tok_text = " ".join(tok_tokens)
+                # De-tokenize WordPieces that have been split off.
+                tok_text = tok_text.replace(" ##", "")
+                tok_text = tok_text.replace("##", "")
 
-            # De-tokenize WordPieces that have been split off.
-            tok_text = tok_text.replace(" ##", "")
-            tok_text = tok_text.replace("##", "")
+                # Clean whitespace
+                tok_text = tok_text.strip()
+                tok_text = " ".join(tok_text.split())
+                orig_text = " ".join(orig_tokens)
 
-            # Clean whitespace
-            tok_text = tok_text.strip()
-            tok_text = " ".join(tok_text.split())
-            orig_text = " ".join(orig_tokens)
-
-            final_text = get_final_text(tok_text, orig_text, do_lower_case, verbose_logging)
-            if final_text in seen_predictions:
-                continue
-
-            seen_predictions[final_text] = True
+                final_text = get_final_text(tok_text, orig_text, do_lower_case, verbose_logging)
+                if final_text in seen_predictions:
+                    continue
+                
+                seen_predictions[final_text] = True
+            
+            else: # Added in Squad 2, unanswerable questions
+                final_text = ""
+                seen_predictions[final_text] = True 
+            
             nbest.append(
                 _NbestPrediction(
                     text=final_text,
@@ -749,8 +798,6 @@ def main():
                         help="Indicate whether we are doing SQuAD 2 or not")
     parser.add_argument("--trained_model", default=None, type=str, required=True,
                         help="Specify path to trained model required for prediction.")
-    parser.add_argument("--dev_set", default=None, type=int, required=True,
-                        help="Specify the question answer pair inside the dev set.")
 
     ## Other parameters
     parser.add_argument("--train_file", default=None, type=str, help="SQuAD json for training. E.g., train-v1.1.json")
@@ -862,7 +909,7 @@ def main():
     num_train_steps = None
     if args.do_train:
         train_examples = read_squad_examples(
-            input_file=args.train_file, is_training=True, x=args.dev_set, do_squad2=args.do_squad2)
+            input_file=args.train_file, is_training=True, do_squad2 = args.do_squad2)
         num_train_steps = int(
             len(train_examples) / args.train_batch_size / args.gradient_accumulation_steps * args.num_train_epochs)
 
@@ -902,145 +949,17 @@ def main():
     global_step = 0
     loss_train = {}
     loss_eval = {}
+               
     if True:
-        train_features = convert_examples_to_features(
-            examples=train_examples,
-            tokenizer=tokenizer,
-            max_seq_length=args.max_seq_length,
-            doc_stride=args.doc_stride,
-            max_query_length=args.max_query_length,
-            is_training=True, do_squad2 = args.do_squad2)
-        logger.info("***** Running training *****")
-        logger.info("  Num orig examples = %d", len(train_examples))
-        logger.info("  Num split examples = %d", len(train_features))
-        logger.info("  Batch size = %d", args.train_batch_size)
-        logger.info("  Num steps = %d", num_train_steps)
-        all_input_ids = torch.tensor([f.input_ids for f in train_features], dtype=torch.long)
-        all_input_mask = torch.tensor([f.input_mask for f in train_features], dtype=torch.long)
-        all_segment_ids = torch.tensor([f.segment_ids for f in train_features], dtype=torch.long)
-        all_start_positions = torch.tensor([f.start_position for f in train_features], dtype=torch.long)
-        all_end_positions = torch.tensor([f.end_position for f in train_features], dtype=torch.long)
-        #Modified in binary classification model
-        all_unanswerables = torch.tensor([f.unanswerable for f in train_features], dtype=torch.long)
-        #pdb.set_trace()
-        train_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids,
-                                   all_start_positions, all_end_positions, all_unanswerables)
-#         train_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids,
-#                                    all_start_positions, all_end_positions)
-        if args.local_rank == -1:
-            train_sampler = RandomSampler(train_data)
-        else:
-            train_sampler = DistributedSampler(train_data)
-        train_dataloader = DataLoader(train_data, sampler=train_sampler, batch_size=args.train_batch_size)
-        
-        
-
-
-#         ##### To create and save loss in evaluation dataset #######################
-#         eval_examples = read_squad_examples(
-#             input_file=args.predict_file, is_training=True)
-#         eval_features = convert_examples_to_features(
-#             examples=eval_examples,
-#             tokenizer=tokenizer,
-#             max_seq_length=args.max_seq_length,
-#             doc_stride=args.doc_stride,
-#             max_query_length=args.max_query_length,
-#             is_training=False)
-
-#         eval_all_input_ids = torch.tensor([f.input_ids for f in eval_features], dtype=torch.long)
-#         eval_all_input_mask = torch.tensor([f.input_mask for f in eval_features], dtype=torch.long)
-#         eval_all_segment_ids = torch.tensor([f.segment_ids for f in eval_features], dtype=torch.long)
-#         eval_all_start_positions = torch.tensor([f.start_position for f in eval_features], dtype=torch.long)
-#         eval_all_end_positions = torch.tensor([f.end_position for f in eval_features], dtype=torch.long)
-#         eval_data = TensorDataset(eval_all_input_ids, eval_all_input_mask, eval_all_segment_ids,
-#                                    eval_all_start_positions, eval_all_end_positions)
-        
-#         if args.local_rank == -1:
-#             eval_sampler = RandomSampler(eval_data)
-#         else:
-#             eval_sampler = DistributedSampler(eval_data)
-#         # Process whole batch for evaluation set
-#         eval_dataloader = DataLoader(eval_data, samplereval_sampler, batch_size=len(eval_features))
-#         ##### To create and save loss in evaluation dataset #######################
-        
-        #model.train() 
-        model.eval() # Set to eval instead of training in this develop loss loop
-        torch.no_grad()
-        for _ in trange(int(args.num_train_epochs), desc="Epoch"):
-            ep = 0
-            loss_eval["Epoch: " + str(ep)] = 0
-            for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
-                batch_count = 0
-                if n_gpu == 1:
-                    batch = tuple(t.to(device) for t in batch) # multi-gpu does scattering it-self
-                #input_ids, input_mask, segment_ids, start_positions, end_positions = batch
-                input_ids, input_mask, segment_ids, start_positions, end_positions, unanswerables = batch
-                #loss = model(input_ids, segment_ids, input_mask, start_positions, end_positions)
-                loss = model(input_ids, segment_ids, input_mask, start_positions, end_positions,unanswerables=unanswerables,max_seq_length = args.max_seq_length)
-                #logger.info(loss.item())
-                loss_eval["Epoch: " + str(ep)] = loss_eval["Epoch: " + str(ep)] +loss.item()
-                #loss_train['Epoch: '+str(ep) + 'Batch: ' + str(batch_count)] = loss
-#                 if n_gpu > 1:
-#                     loss = loss.mean() # mean() to average on multi-gpu.
-#                 if args.fp16 and args.loss_scale != 1.0:
-#                     # rescale loss for fp16 training
-#                     # see https://docs.nvidia.com/deeplearning/sdk/mixed-precision-training/index.html
-#                     loss = loss * args.loss_scale
-#                 if args.gradient_accumulation_steps > 1:
-#                     loss = loss / args.gradient_accumulation_steps
-#                 loss.backward()
-#                 if (step + 1) % args.gradient_accumulation_steps == 0:
-#                     if args.fp16 or args.optimize_on_cpu:
-#                         if args.fp16 and args.loss_scale != 1.0:
-#                             # scale down gradients for fp16 training
-#                             for param in model.parameters():
-#                                 if param.grad is not None:
-#                                     param.grad.data = param.grad.data / args.loss_scale
-#                         is_nan = set_optimizer_params_grad(param_optimizer, model.named_parameters(), test_nan=True)
-#                         if is_nan:
-#                             logger.info("FP16 TRAINING: Nan in gradients, reducing loss scaling")
-#                             args.loss_scale = args.loss_scale / 2
-#                             model.zero_grad()
-#                             continue
-#                         optimizer.step()
-#                         copy_optimizer_params_to_model(model.named_parameters(), param_optimizer)
-#                     else:
-#                         optimizer.step()
-                model.zero_grad()
-                batch_count = batch_count + 1
-                global_step += 1
-            #loss_eval["Epoch: " + str(ep)] =loss_eval["Epoch: " + str(ep)]/len(train_features)        
-            loss_eval["Epoch: " + str(ep)] =loss_eval["Epoch: " + str(ep)]/global_step        
-            ##### To create and save loss in evaluation dataset #######################
-#             for step, batch in enumerate(tqdm(eval_dataloader, desc="Iteration")):
-#                 if n_gpu == 1:
-#                     batch = tuple(t.to(device) for t in batch) # multi-gpu does scattering it-self
-#                 input_ids, input_mask, segment_ids, start_positions, end_positions = batch
-#                 loss_eval_temp = model(input_ids, segment_ids, input_mask, start_positions, end_positions)
-#                 loss_eval['Epoch: '+str(ep) + 'Batch: ' + str(batch)] = loss_eval_temp
-                
-#             #loss_eval['epoch :'+str(ep)] = model(input_ids, segment_ids, input_mask, start_positions, end_positions)
-            ##### To create and save loss in evaluation dataset #######################
-
-            #Printing File
-            #loss_train['epoch: '+str(ep)] = loss_temp
-            #torch.save(model.state_dict(), (str(args.output_dir)+ "train_epoch" + str(ep)  + ".json"))
-            ep = ep +1
-        
-    with open(str(args.output_dir) + str(args.trained_model[14:-5]) + "_Loss_Eval_Dev_" + str(args.dev_set) + ".pickle", "wb") as fp:   #Pickling
-            pickle.dump(loss_eval, fp)      
-        
-
-    if False: # Likely not gonna need it for loss calculation
         eval_examples = read_squad_examples(
-            input_file=args.predict_file, is_training=False)
+            input_file=args.predict_file, is_training=False,do_squad2 = args.do_squad2)
         eval_features = convert_examples_to_features(
             examples=eval_examples,
             tokenizer=tokenizer,
             max_seq_length=args.max_seq_length,
             doc_stride=args.doc_stride,
             max_query_length=args.max_query_length,
-            is_training=False)
+            is_training=False,do_squad2 = args.do_squad2)
 
         logger.info("***** Running predictions *****")
         logger.info("  Num orig examples = %d", len(eval_examples))
@@ -1062,6 +981,7 @@ def main():
         all_results = []
         batch_start_totals = []
         batch_end_totals = []
+        batch_unanswerable_totals = []
         logger.info("Start evaluating")
         for input_ids, input_mask, segment_ids, example_indices in tqdm(eval_dataloader, desc="Evaluating"):
             if len(all_results) % 1000 == 0:
@@ -1070,25 +990,30 @@ def main():
             input_mask = input_mask.to(device)
             segment_ids = segment_ids.to(device)
             with torch.no_grad():
-                batch_start_logits, batch_end_logits = model(input_ids, segment_ids, input_mask)
+                batch_start_logits, batch_end_logits,batch_unanswerable_logits = model(input_ids, segment_ids, input_mask, max_seq_length = args.max_seq_length)
                 batch_start_totals.append(batch_start_logits)
                 batch_end_totals.append(batch_end_logits)
+                batch_unanswerable_totals.append(batch_unanswerable_logits)
                 #This one is not from original repository
                 #loss_eval['epoch :'+str(ep)] = model(input_ids, segment_ids, input_mask, start_positions, end_positions)
             for i, example_index in enumerate(example_indices):
                 start_logits = batch_start_logits[i].detach().cpu().tolist()
                 end_logits = batch_end_logits[i].detach().cpu().tolist()
+                unanswerable_logits = batch_unanswerable_logits[i].detach().cpu().tolist()
+                pdb.set_trace()
                 eval_feature = eval_features[example_index.item()]
                 unique_id = int(eval_feature.unique_id)
                 all_results.append(RawResult(unique_id=unique_id,
                                              start_logits=start_logits,
-                                             end_logits=end_logits))
+                                             end_logits=end_logits,
+                                             unanswerable_logits=unanswerable_logits,
+                                            ))
         output_prediction_file = os.path.join(args.output_dir, "predictions.json")
         output_nbest_file = os.path.join(args.output_dir, "nbest_predictions.json")
-#         write_predictions(eval_examples, eval_features, all_results,
-#                           args.n_best_size, args.max_answer_length,
-#                           args.do_lower_case, output_prediction_file,
-#                           output_nbest_file, args.verbose_logging)        
+        write_predictions(eval_examples, eval_features, all_results,
+                          args.n_best_size, args.max_answer_length,
+                          args.do_lower_case, output_prediction_file,
+                          output_nbest_file, args.verbose_logging,args.do_squad2)        
         
         #To compute total loss in evaluation dataset
 #         from torch.nn import CrossEntropyLoss
@@ -1097,7 +1022,6 @@ def main():
 #         end_loss = loss_fct(end_logits, end_positions)
 #         total_loss = (start_loss + end_loss) / 2
 
-        #Write loss history on training and evaluation set
         
 
 #         with open(str(args.output_dir) + "Loss_Eval.txt", "wb") as fp:   #Pickling

@@ -1115,7 +1115,7 @@ def main():
             input_mask = input_mask.to(device)
             segment_ids = segment_ids.to(device)
             with torch.no_grad():
-                batch_start_logits, batch_end_logits = model(input_ids, segment_ids, input_mask)
+                batch_start_logits, batch_end_logits = model(input_ids, segment_ids, input_mask,max_seq_length = args.max_seq_length)
                 batch_start_totals.append(batch_start_logits)
                 batch_end_totals.append(batch_end_logits)
                 #This one is not from original repository
