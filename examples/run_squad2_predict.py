@@ -440,7 +440,7 @@ def _check_is_max_context(doc_spans, cur_span_index, position):
 
 
 RawResult = collections.namedtuple("RawResult",
-                                   ["unique_id", "start_logits", "end_logits"])
+                                   ["unique_id", "start_logits", "end_logits","unanswerable_logits"])
 
 
 def write_predictions(all_examples, all_features, all_results, n_best_size,
@@ -1000,7 +1000,7 @@ def main():
                 start_logits = batch_start_logits[i].detach().cpu().tolist()
                 end_logits = batch_end_logits[i].detach().cpu().tolist()
                 unanswerable_logits = batch_unanswerable_logits[i].detach().cpu().tolist()
-                pdb.set_trace()
+                #pdb.set_trace()
                 eval_feature = eval_features[example_index.item()]
                 unique_id = int(eval_feature.unique_id)
                 all_results.append(RawResult(unique_id=unique_id,
