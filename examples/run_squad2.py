@@ -923,7 +923,7 @@ def main():
             len(train_examples) / args.train_batch_size / args.gradient_accumulation_steps * args.num_train_epochs)
 
     # Prepare model
-    model = BertForQuestionAnswering.from_pretrained(args.bert_model,args.max_seq_length)
+    model = BertForQuestionAnswering.from_pretrained(args.bert_model,max_seq_length=args.max_seq_length)
     if args.fp16:
         model.half()
     model.to(device)

@@ -460,7 +460,7 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
 
     _PrelimPrediction = collections.namedtuple(  # pylint: disable=invalid-name
         "PrelimPrediction",
-        ["feature_index", "start_index", "end_index", "start_logit", "end_logit"])
+        ["feature_index", "start_index", "end_index", "start_logit", "end_logit","unanswerable_logit"])
 
     all_predictions = collections.OrderedDict()
     all_nbest_json = collections.OrderedDict()
@@ -494,7 +494,7 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
                     # We could hypothetically create invalid predictions, e.g., predict
                     # that the start of the span is in the question. We throw out all
                     # invalid predictions.
-                    
+                    #pdb.set_trace()
                     #Add by Theerit, if start index and end index are negative override to be unanswerable
                     if start_index <= 0 and end_index <= 0:
                         prelim_predictions.append(
@@ -504,7 +504,7 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
                             end_index=0,
                             start_logit=result.start_logits[start_index],
                             end_logit=result.end_logits[end_index],
-                            unanswerable_logit=result.answerable_outputs
+                            unanswerable_logit=result.unanswerable_logits
                         ))
                         continue
                     #Add by Theerit, if start index and end index are negative override to be unanswerable'
@@ -531,7 +531,7 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
                             end_index=end_index,
                             start_logit=result.start_logits[start_index],
                             end_logit=result.end_logits[end_index],
-                            unanswerable_logit=result.answerable_outputs
+                            unanswerable_logit=result.unanswerable_logits
                         ))
                     
 #         #Add from google Bert github 
@@ -543,14 +543,14 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
 #               end_index=0,
 #               start_logit=null_start_logit,
 #               end_logit=null_end_logit))
-                
+        #pdb.set_trace()        
         prelim_predictions = sorted(
             prelim_predictions,
-            key=lambda x: 0.8*(x.start_logit + x.end_logit) + 0.2*x.unanswerable_logit,
+            key=lambda x: 0.8*(x.start_logit + x.end_logit) + 0.2*max(x.unanswerable_logit),
             reverse=True)
 
         _NbestPrediction = collections.namedtuple(  # pylint: disable=invalid-name
-            "NbestPrediction", ["text", "start_logit", "end_logit"])
+            "NbestPrediction", ["text", "start_logit", "end_logit","unanswerable_logit"])
 
         seen_predictions = {}
         nbest = []
@@ -589,20 +589,23 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
                 _NbestPrediction(
                     text=final_text,
                     start_logit=pred.start_logit,
-                    end_logit=pred.end_logit))
+                    end_logit=pred.end_logit,
+                    unanswerable_logit = pred.unanswerable_logit
+                ))
 
         # In very rare edge cases we could have no valid predictions. So we
         # just create a nonce prediction in this case to avoid failure.
         if not nbest:
             nbest.append(
-                _NbestPrediction(text="empty", start_logit=0.0, end_logit=0.0))
+                _NbestPrediction(text="empty", start_logit=0.0, end_logit=0.0, unanswerable_logit =0.0))
 
         assert len(nbest) >= 1
 
         total_scores = []
         for entry in nbest:
-            total_scores.append(entry.start_logit + entry.end_logit)
-
+            #total_scores.append(entry.start_logit + entry.end_logit)
+            total_scores.append(0.8*(entry.start_logit + entry.end_logit)+0.2*max(entry.unanswerable_logit))
+            
         probs = _compute_softmax(total_scores)
 
         nbest_json = []
@@ -612,6 +615,7 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
             output["probability"] = probs[i]
             output["start_logit"] = entry.start_logit
             output["end_logit"] = entry.end_logit
+            output["unanswerable_logit"] = max(entry.unanswerable_logit)
             nbest_json.append(output)
 
         assert len(nbest_json) >= 1
@@ -914,7 +918,7 @@ def main():
             len(train_examples) / args.train_batch_size / args.gradient_accumulation_steps * args.num_train_epochs)
 
     # Prepare model
-    model = BertForQuestionAnswering.from_pretrained(args.bert_model,args.max_seq_length)
+    model = BertForQuestionAnswering.from_pretrained(args.bert_model,max_seq_length=args.max_seq_length)
     #the_model = TheModelClass(*args, **kwargs)
     model.load_state_dict(torch.load(args.trained_model))
     
