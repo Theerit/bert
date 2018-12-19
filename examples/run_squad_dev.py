@@ -815,8 +815,8 @@ def main():
             raise ValueError(
                 "If `do_predict` is True, then `predict_file` must be specified.")
 
-    if os.path.exists(args.output_dir) and os.listdir(args.output_dir):
-        raise ValueError("Output directory () already exists and is not empty.")
+#     if os.path.exists(args.output_dir) and os.listdir(args.output_dir):
+#         raise ValueError("Output directory () already exists and is not empty.")
     os.makedirs(args.output_dir, exist_ok=True)
 
     tokenizer = BertTokenizer.from_pretrained(args.bert_model)
@@ -965,7 +965,8 @@ def main():
                 model.zero_grad()
                 batch_count = batch_count + 1
                 global_step += 1
-            loss_eval["Epoch: " + str(ep)] =loss_eval["Epoch: " + str(ep)]/len(train_features)        
+            #loss_eval["Epoch: " + str(ep)] =loss_eval["Epoch: " + str(ep)]/len(train_features)        
+            loss_eval["Epoch: " + str(ep)] =loss_eval["Epoch: " + str(ep)]/global_step        
             ##### To create and save loss in evaluation dataset #######################
 #             for step, batch in enumerate(tqdm(eval_dataloader, desc="Iteration")):
 #                 if n_gpu == 1:
@@ -982,7 +983,7 @@ def main():
             #torch.save(model.state_dict(), (str(args.output_dir)+ "train_epoch" + str(ep)  + ".json"))
             ep = ep +1
         
-    with open(str(args.output_dir) + "Loss_Eval" + str(args.dev_set) + ".pickle", "wb") as fp:   #Pickling
+    with open(str(args.output_dir) + str(args.trained_model[12:-5]) + "_Loss_Eval_Dev_" + str(args.dev_set) + ".pickle", "wb") as fp:   #Pickling
             pickle.dump(loss_eval, fp)      
         
 

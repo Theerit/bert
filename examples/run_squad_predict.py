@@ -897,7 +897,7 @@ def main():
             segment_ids = segment_ids.to(device)
             with torch.no_grad():
                 batch_start_logits, batch_end_logits = model(input_ids, segment_ids, input_mask)
-                loss_eval['epoch :'+str(ep)] = model(input_ids, segment_ids, input_mask, start_positions, end_positions)
+                #loss_eval['epoch :'+str(ep)] = model(input_ids, segment_ids, input_mask, start_positions, end_positions)
             for i, example_index in enumerate(example_indices):
                 start_logits = batch_start_logits[i].detach().cpu().tolist()
                 end_logits = batch_end_logits[i].detach().cpu().tolist()
@@ -914,8 +914,8 @@ def main():
                           output_nbest_file, args.verbose_logging)
          
         #Write loss history on evaluation set
-        with open(str(args.output_dir) + "Loss_Eval.txt", "wb") as fp:   #Pickling
-            pickle.dump(loss_eval, fp)
+#         with open(str(args.output_dir) + "Loss_Eval.txt", "wb") as fp:   #Pickling
+#             pickle.dump(loss_eval, fp)
 
 
 if __name__ == "__main__":
