@@ -597,15 +597,22 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
         # just create a nonce prediction in this case to avoid failure.
         if not nbest:
             nbest.append(
-                _NbestPrediction(text="empty", start_logit=0.0, end_logit=0.0, unanswerable_logit =0.0))
+                _NbestPrediction(text="empty", start_logit=0.0, end_logit=0.0, unanswerable_logit =[0.0,0.0]))
 
         assert len(nbest) >= 1
 
         total_scores = []
+        #pdb.set_trace()
         for entry in nbest:
             #total_scores.append(entry.start_logit + entry.end_logit)
-            total_scores.append(0.8*(entry.start_logit + entry.end_logit)+0.2*max(entry.unanswerable_logit))
-            
+            #pdb.set_trace()
+            #total_scores.append(0.8*(entry.start_logit + entry.end_logit)+0.2*max(entry.unanswerable_logit))
+            try:
+                total_scores.append(0.8*(entry.start_logit + entry.end_logit)+0.2*max(entry.unanswerable_logit))
+            except:
+                pdb.set_trace()
+
+          
         probs = _compute_softmax(total_scores)
 
         nbest_json = []
@@ -920,6 +927,9 @@ def main():
     # Prepare model
     model = BertForQuestionAnswering.from_pretrained(args.bert_model,max_seq_length=args.max_seq_length)
     #the_model = TheModelClass(*args, **kwargs)
+#     model_state_dict = torch.load(args.trained_model)
+#     model = BertForQuestionAnswering.from_pretrained(args.bert_model,max_seq_length=args.max_seq_length, state_dict=model_state_dict)
+#     model.to(device)
     model.load_state_dict(torch.load(args.trained_model))
     
     if args.fp16:

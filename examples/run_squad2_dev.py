@@ -869,7 +869,11 @@ def main():
     # Prepare model
     model = BertForQuestionAnswering.from_pretrained(args.bert_model,max_seq_length=args.max_seq_length)
     #the_model = TheModelClass(*args, **kwargs)
-    model.load_state_dict(torch.load(args.trained_model))
+    # Load a trained model that you have fine-tuned
+    model_state_dict = torch.load(output_model_file)
+    model = BertForQuestionAnswering.from_pretrained(args.bert_model, state_dict=model_state_dict)
+    model.to(device)
+    #model.load_state_dict(torch.load(args.trained_model))
     
     if args.fp16:
         model.half()
