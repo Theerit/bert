@@ -438,7 +438,7 @@ RawResult = collections.namedtuple("RawResult",
 
 def write_predictions(all_examples, all_features, all_results, n_best_size,
                       max_answer_length, do_lower_case, output_prediction_file,
-                      output_nbest_file, verbose_logging, do_squad2):
+                      output_nbest_file,output_null_log_odds_file ,verbose_logging, do_squad2,null_score_diff_threshold):
     """Write final predictions to the json file."""
     logger.info("Writing predictions to: %s" % (output_prediction_file))
     logger.info("Writing nbest to: %s" % (output_nbest_file))
@@ -596,10 +596,15 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
                 _NbestPrediction(text="empty", start_logit=0.0, end_logit=0.0))
 
         assert len(nbest) >= 1
-
+        
+        #Added from google github repo
         total_scores = []
+        best_non_null_entry = None
         for entry in nbest:
             total_scores.append(entry.start_logit + entry.end_logit)
+            if not best_non_null_entry:
+                if entry.text:
+                    best_non_null_entry = entry
 
         probs = _compute_softmax(total_scores)
 
@@ -614,7 +619,17 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
 
         assert len(nbest_json) >= 1
 
-        all_predictions[example.qas_id] = nbest_json[0]["text"]
+        if not do_squad2:
+            all_predictions[example.qas_id] = nbest_json[0]["text"]
+        else:
+            # predict "" iff the null score - the score of best non-null > threshold
+            score_diff = score_null - best_non_null_entry.start_logit - (best_non_null_entry.end_logit)
+            scores_diff_json[example.qas_id] = score_diff
+            if score_diff > null_score_diff_threshold:
+                all_predictions[example.qas_id] = ""
+            else:
+                all_predictions[example.qas_id] = best_non_null_entry.text
+
         all_nbest_json[example.qas_id] = nbest_json
 
     with open(output_prediction_file, "w") as writer:
@@ -622,8 +637,10 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
 
     with open(output_nbest_file, "w") as writer:
         writer.write(json.dumps(all_nbest_json, indent=4) + "\n")
-
-
+    if do_squad2:        
+        with open(output_null_log_odds_file, "w") as writer:
+            writer.write(json.dumps(scores_diff_json, indent=4) + "\n")    
+            
 def get_final_text(pred_text, orig_text, do_lower_case, verbose_logging=False):
     """Project the tokenized prediction back to the original text."""
 
@@ -801,6 +818,8 @@ def main():
                         help="Indicate whether we are doing SQuAD 2 or not")
     parser.add_argument("--trained_model", default=None, type=str, required=True,
                         help="Specify path to trained model required for prediction.")
+    parser.add_argument("--null_score_diff_threshold", default=-3, type=float, required=True,
+                        help="Threshold to choose unanswerable questions.")
 
     ## Other parameters
     parser.add_argument("--train_file", default=None, type=str, help="SQuAD json for training. E.g., train-v1.1.json")
@@ -1157,10 +1176,12 @@ def main():
                                              end_logits=end_logits))
         output_prediction_file = os.path.join(args.output_dir, "predictions.json")
         output_nbest_file = os.path.join(args.output_dir, "nbest_predictions.json")
+        output_null_log_odds_file = os.path.join(args.output_dir, "null_odds.json")
         write_predictions(eval_examples, eval_features, all_results,
                           args.n_best_size, args.max_answer_length,
                           args.do_lower_case, output_prediction_file,
-                          output_nbest_file, args.verbose_logging,args.do_squad2)        
+                          output_nbest_file, output_null_log_odds_file,args.verbose_logging,
+                          args.do_squad2,args.null_score_diff_threshold)        
         
         #To compute total loss in evaluation dataset
 #         from torch.nn import CrossEntropyLoss
