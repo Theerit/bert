@@ -27,7 +27,6 @@ import os
 import random
 import pickle
 from tqdm import tqdm, trange
-import pdb
 
 import numpy as np
 import torch
@@ -490,7 +489,7 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
                     # invalid predictions.
                     
                     #Add by Theerit, if start index and end index are negative override to be unanswerable
-                    if start_index < 0 and end_index < 0:
+                    if start_index <= 0 and end_index <= 0:
                         prelim_predictions.append(
                         _PrelimPrediction(
                             feature_index=feature_index,
@@ -580,6 +579,15 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
                     text=final_text,
                     start_logit=pred.start_logit,
                     end_logit=pred.end_logit))
+            
+        #Added from google github repo
+        # if we didn't inlude the empty option in the n-best, inlcude it
+#         if do_squad2:
+#             if "" not in seen_predictions:
+#                 nbest.append(
+#                     _NbestPrediction(
+#                         text="", start_logit=null_start_logit,
+#                         end_logit=null_end_logit))
 
         # In very rare edge cases we could have no valid predictions. So we
         # just create a nonce prediction in this case to avoid failure.
@@ -791,6 +799,8 @@ def main():
                         help="The output directory where the model checkpoints will be written.")
     parser.add_argument("--do_squad2",  action='store_true', required=True,
                         help="Indicate whether we are doing SQuAD 2 or not")
+    parser.add_argument("--trained_model", default=None, type=str, required=True,
+                        help="Specify path to trained model required for prediction.")
 
     ## Other parameters
     parser.add_argument("--train_file", default=None, type=str, help="SQuAD json for training. E.g., train-v1.1.json")
@@ -908,6 +918,10 @@ def main():
 
     # Prepare model
     model = BertForQuestionAnswering.from_pretrained(args.bert_model)
+    model_state_dict = torch.load(args.trained_model)
+    model = BertForQuestionAnswering.from_pretrained(args.bert_model, state_dict=model_state_dict)
+    model.to(device)
+    #model.load_state_dict(torch.load(args.trained_model))
     
     if args.fp16:
         model.half()
@@ -1027,7 +1041,6 @@ def main():
                 input_ids, input_mask, segment_ids, start_positions, end_positions = batch
                 loss = model(input_ids, segment_ids, input_mask, start_positions, end_positions)
                 loss_train['Epoch: '+str(ep) + 'Batch: ' + str(batch_count)] = loss.item()
-                #pdb.set_trace()
                 #loss_temp = loss
                 if n_gpu > 1:
                     loss = loss.mean() # mean() to average on multi-gpu.
@@ -1079,15 +1092,15 @@ def main():
             pickle.dump(loss_train, fp)
             
             
-     # Save a trained model
-    model_to_save = model.module if hasattr(model, 'module') else model  # Only save the model it-self
-    output_model_file = os.path.join(args.output_dir, "pytorch_model.bin")
-    torch.save(model_to_save.state_dict(), output_model_file)
+#      # Save a trained model
+#     model_to_save = model.module if hasattr(model, 'module') else model  # Only save the model it-self
+#     output_model_file = os.path.join(args.output_dir, "pytorch_model.bin")
+#     torch.save(model_to_save.state_dict(), output_model_file)
 
-    # Load a trained model that you have fine-tuned
-    model_state_dict = torch.load(output_model_file)
-    model = BertForQuestionAnswering.from_pretrained(args.bert_model, state_dict=model_state_dict)
-    model.to(device)
+#     # Load a trained model that you have fine-tuned
+#     model_state_dict = torch.load(output_model_file)
+#     model = BertForQuestionAnswering.from_pretrained(args.bert_model, state_dict=model_state_dict)
+#     model.to(device)
                     
             
     if args.do_predict:
@@ -1147,7 +1160,7 @@ def main():
         write_predictions(eval_examples, eval_features, all_results,
                           args.n_best_size, args.max_answer_length,
                           args.do_lower_case, output_prediction_file,
-                          output_nbest_file, args.verbose_logging)        
+                          output_nbest_file, args.verbose_logging,args.do_squad2)        
         
         #To compute total loss in evaluation dataset
 #         from torch.nn import CrossEntropyLoss
