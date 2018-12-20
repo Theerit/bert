@@ -464,24 +464,24 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
         features = example_index_to_features[example_index]
 
         prelim_predictions = []
-#         # keep track of the minimum score of null start+end of position 0 (From Google)
-#         score_null = 1000000  # large and positive
-#         min_null_feature_index = 0  # the paragraph slice with min mull score
-#         null_start_logit = 0  # the start logit at the slice with min null score
-#         null_end_logit = 0  # the end logit at the slice with min null score
+#        #keep track of the minimum score of null start+end of position 0 (From Google)
+        score_null = 1000000  # large and positive
+        min_null_feature_index = 0  # the paragraph slice with min mull score
+        null_start_logit = 0  # the start logit at the slice with min null score
+        null_end_logit = 0  # the end logit at the slice with min null score
         for (feature_index, feature) in enumerate(features):
             result = unique_id_to_result[feature.unique_id]
             start_indexes = _get_best_indexes(result.start_logits, n_best_size)
             end_indexes = _get_best_indexes(result.end_logits, n_best_size)
             
-#             # if we could have irrelevant answers, get the min score of irrelevant
-#             if do_squad2:
-#                 feature_null_score = result.start_logits[0] + result.end_logits[0]
-#                 if feature_null_score < score_null:
-#                     score_null = feature_null_score
-#                     min_null_feature_index = feature_index
-#                     null_start_logit = result.start_logits[0]
-#                     null_end_logit = result.end_logits[0]
+            # if we could have irrelevant answers, get the min score of irrelevant
+            if do_squad2:
+                feature_null_score = result.start_logits[0] + result.end_logits[0]
+                if feature_null_score < score_null:
+                    score_null = feature_null_score
+                    min_null_feature_index = feature_index
+                    null_start_logit = result.start_logits[0]
+                    null_end_logit = result.end_logits[0]
                 
             for start_index in start_indexes:
                 for end_index in end_indexes:
@@ -489,17 +489,17 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
                     # that the start of the span is in the question. We throw out all
                     # invalid predictions.
                     
-                    #Add by Theerit, if start index and end index are negative override to be unanswerable
-                    if start_index < 0 and end_index < 0:
-                        prelim_predictions.append(
-                        _PrelimPrediction(
-                            feature_index=feature_index,
-                            start_index=0,
-                            end_index=0,
-                            start_logit=result.start_logits[start_index],
-                            end_logit=result.end_logits[end_index]))
-                        continue
-                    #Add by Theerit, if start index and end index are negative override to be unanswerable'
+#                     #Add by Theerit, if start index and end index are negative override to be unanswerable
+#                     if start_index < 0 and end_index < 0:
+#                         prelim_predictions.append(
+#                         _PrelimPrediction(
+#                             feature_index=feature_index,
+#                             start_index=0,
+#                             end_index=0,
+#                             start_logit=result.start_logits[start_index],
+#                             end_logit=result.end_logits[end_index]))
+#                         continue
+#                     #Add by Theerit, if start index and end index are negative override to be unanswerable'
                     
                     if start_index >= len(feature.tokens):
                         continue
@@ -524,15 +524,15 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
                             start_logit=result.start_logits[start_index],
                             end_logit=result.end_logits[end_index]))
                     
-#         #Add from google Bert github 
-#         if do_squad2:
-#             prelim_predictions.append(
-#           _PrelimPrediction(
-#               feature_index=min_null_feature_index,
-#               start_index=0,
-#               end_index=0,
-#               start_logit=null_start_logit,
-#               end_logit=null_end_logit))
+        #Add from google Bert github 
+        if do_squad2:
+            prelim_predictions.append(
+          _PrelimPrediction(
+              feature_index=min_null_feature_index,
+              start_index=0,
+              end_index=0,
+              start_logit=null_start_logit,
+              end_logit=null_end_logit))
                 
         prelim_predictions = sorted(
             prelim_predictions,
