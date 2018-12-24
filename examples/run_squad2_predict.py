@@ -445,7 +445,7 @@ RawResult = collections.namedtuple("RawResult",
 
 def write_predictions(all_examples, all_features, all_results, n_best_size,
                       max_answer_length, do_lower_case, output_prediction_file,
-                      output_nbest_file, verbose_logging, do_squad2):
+                      output_nbest_file, verbose_logging, do_squad2,null_score_diff_threshold):
     """Write final predictions to the json file."""
     logger.info("Writing predictions to: %s" % (output_prediction_file))
     logger.info("Writing nbest to: %s" % (output_nbest_file))
@@ -479,6 +479,7 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
             result = unique_id_to_result[feature.unique_id]
             start_indexes = _get_best_indexes(result.start_logits, n_best_size)
             end_indexes = _get_best_indexes(result.end_logits, n_best_size)
+            #pdb.set_trace()
             
 #             # if we could have irrelevant answers, get the min score of irrelevant
 #             if do_squad2:
@@ -488,6 +489,8 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
 #                     min_null_feature_index = feature_index
 #                     null_start_logit = result.start_logits[0]
 #                     null_end_logit = result.end_logits[0]
+            if do_squad2:
+                unanswerable_prob = _compute_softmax(result.unanswerable_logits)
                 
             for start_index in start_indexes:
                 for end_index in end_indexes:
@@ -496,17 +499,17 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
                     # invalid predictions.
                     #pdb.set_trace()
                     #Add by Theerit, if start index and end index are negative override to be unanswerable
-                    if start_index <= 0 and end_index <= 0:
-                        prelim_predictions.append(
-                        _PrelimPrediction(
-                            feature_index=feature_index,
-                            start_index=0,
-                            end_index=0,
-                            start_logit=result.start_logits[start_index],
-                            end_logit=result.end_logits[end_index],
-                            unanswerable_logit=result.unanswerable_logits
-                        ))
-                        continue
+#                     if start_index <= 0 and end_index <= 0:
+#                         prelim_predictions.append(
+#                         _PrelimPrediction(
+#                             feature_index=feature_index,
+#                             start_index=0,
+#                             end_index=0,
+#                             start_logit=result.start_logits[start_index],
+#                             end_logit=result.end_logits[end_index],
+#                             unanswerable_logit=result.unanswerable_logits
+#                         ))
+#                         continue
                     #Add by Theerit, if start index and end index are negative override to be unanswerable'
                     
                     if start_index >= len(feature.tokens):
@@ -546,7 +549,8 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
         #pdb.set_trace()        
         prelim_predictions = sorted(
             prelim_predictions,
-            key=lambda x: 0.8*(x.start_logit + x.end_logit) + 0.2*max(x.unanswerable_logit),
+            #key=lambda x: 0.5*(x.start_logit + x.end_logit) + 0.5*max(x.unanswerable_logit),
+            key=lambda x: x.start_logit + x.end_logit,
             reverse=True)
 
         _NbestPrediction = collections.namedtuple(  # pylint: disable=invalid-name
@@ -559,7 +563,8 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
                 break
             feature = features[pred.feature_index]
             
-            if pred.start_index > 0 and pred.unanswerable_logit[0] > pred.unanswerable_logit[1]:  # this is a non-null prediction added in squad2
+            #if pred.start_index > 0 and pred.unanswerable_logit[0] > pred.unanswerable_logit[1]:  # this is a non-null prediction added in squad2
+            if pred.start_index > 0:
                 tok_tokens = feature.tokens[pred.start_index:(pred.end_index + 1)]
                 orig_doc_start = feature.token_to_orig_map[pred.start_index]
                 orig_doc_end = feature.token_to_orig_map[pred.end_index]
@@ -602,18 +607,24 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
         assert len(nbest) >= 1
 
         total_scores = []
+        best_non_null_entry = None
         #pdb.set_trace()
         for entry in nbest:
             #total_scores.append(entry.start_logit + entry.end_logit)
             #pdb.set_trace()
             #total_scores.append(0.8*(entry.start_logit + entry.end_logit)+0.2*max(entry.unanswerable_logit))
             try:
-                total_scores.append(0.8*(entry.start_logit + entry.end_logit)+0.2*max(entry.unanswerable_logit))
+                #total_scores.append(0.8*(entry.start_logit + entry.end_logit)+0.2*max(entry.unanswerable_logit))
+                total_scores.append(entry.start_logit + entry.end_logit)
             except:
                 pdb.set_trace()
+            if not best_non_null_entry:
+                if entry.text:
+                    best_non_null_entry = entry
 
           
         probs = _compute_softmax(total_scores)
+        #probs_binary = _compute_softmax(total_scores)
 
         nbest_json = []
         for (i, entry) in enumerate(nbest):
@@ -622,12 +633,25 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
             output["probability"] = probs[i]
             output["start_logit"] = entry.start_logit
             output["end_logit"] = entry.end_logit
-            output["unanswerable_logit"] = max(entry.unanswerable_logit)
+            #output["unanswerable_logit"] = max(entry.unanswerable_logit)
+            output["unanswerable_probs"] = unanswerable_prob[1]
             nbest_json.append(output)
 
         assert len(nbest_json) >= 1
-
-        all_predictions[example.qas_id] = nbest_json[0]["text"]
+        
+        ########### added by Theerit to output probablity of answerable #################
+        if not do_squad2:
+            all_predictions[example.qas_id] = nbest_json[0]["text"]
+        else:
+            # predict "" if probablity of being unanswerable (1) is higher than being answerable (0)
+            #score_diff = score_null - best_non_null_entry.start_logit - (best_non_null_entry.end_logit)           
+            scores_diff_json[example.qas_id] = unanswerable_prob[1]
+            #if score_diff > null_score_diff_threshold:
+            if unanswerable_prob[1] > null_score_diff_threshold:
+                all_predictions[example.qas_id] = ""
+            else:
+                all_predictions[example.qas_id] = best_non_null_entry.text
+        ########### added by Theerit to output probablity of answerable #################
         all_nbest_json[example.qas_id] = nbest_json
 
     with open(output_prediction_file, "w") as writer:
@@ -635,7 +659,9 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
 
     with open(output_nbest_file, "w") as writer:
         writer.write(json.dumps(all_nbest_json, indent=4) + "\n")
-
+    if do_squad2:        
+        with open(output_null_log_odds_file, "w") as writer:
+            writer.write(json.dumps(scores_diff_json, indent=4) + "\n") 
 
 def get_final_text(pred_text, orig_text, do_lower_case, verbose_logging=False):
     """Project the tokenized prediction back to the original text."""
@@ -809,6 +835,8 @@ def main():
                         help="Indicate whether we are doing SQuAD 2 or not")
     parser.add_argument("--trained_model", default=None, type=str, required=True,
                         help="Specify path to trained model required for prediction.")
+    parser.add_argument("--null_score_diff_threshold", default=0.5, type=float, required=True,
+                        help="Threshold to choose unanswerable questions.")
 
     ## Other parameters
     parser.add_argument("--train_file", default=None, type=str, help="SQuAD json for training. E.g., train-v1.1.json")
@@ -1024,10 +1052,11 @@ def main():
                                             ))
         output_prediction_file = os.path.join(args.output_dir, "predictions.json")
         output_nbest_file = os.path.join(args.output_dir, "nbest_predictions.json")
+        output_null_log_odds_file = os.path.join(args.output_dir, "null_odds.json")
         write_predictions(eval_examples, eval_features, all_results,
                           args.n_best_size, args.max_answer_length,
                           args.do_lower_case, output_prediction_file,
-                          output_nbest_file, args.verbose_logging,args.do_squad2)        
+                          output_nbest_file, args.verbose_logging,args.do_squad2,args.null_score_diff_threshold)        
         
         #To compute total loss in evaluation dataset
 #         from torch.nn import CrossEntropyLoss

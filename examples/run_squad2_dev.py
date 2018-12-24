@@ -870,8 +870,8 @@ def main():
     model = BertForQuestionAnswering.from_pretrained(args.bert_model,max_seq_length=args.max_seq_length)
     #the_model = TheModelClass(*args, **kwargs)
     # Load a trained model that you have fine-tuned
-    model_state_dict = torch.load(output_model_file)
-    model = BertForQuestionAnswering.from_pretrained(args.bert_model, state_dict=model_state_dict)
+    model_state_dict = torch.load(args.trained_model)
+    model = BertForQuestionAnswering.from_pretrained(args.bert_model, state_dict=model_state_dict,max_seq_length=args.max_seq_length)
     model.to(device)
     #model.load_state_dict(torch.load(args.trained_model))
     

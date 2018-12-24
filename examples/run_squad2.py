@@ -796,6 +796,11 @@ def set_optimizer_params_grad(named_params_optimizer, named_params_model, test_n
             param_opti.grad = None
     return is_nan
 
+def warmup_linear(x, warmup=0.002):
+    if x < warmup:
+        return x/warmup
+    return 1.0 - x
+
 def main():
     parser = argparse.ArgumentParser()
 
@@ -1068,6 +1073,7 @@ def main():
                     optimizer.step()
                     optimizer.zero_grad()
                     global_step += 1
+                    batch_count += 1
                     
             ##### To create and save loss in evaluation dataset #######################
 #             for step, batch in enumerate(tqdm(eval_dataloader, desc="Iteration")):
