@@ -870,10 +870,10 @@ def main():
     model = BertForQuestionAnswering.from_pretrained(args.bert_model,max_seq_length=args.max_seq_length)
     #the_model = TheModelClass(*args, **kwargs)
     # Load a trained model that you have fine-tuned
-    model_state_dict = torch.load(args.trained_model)
-    model = BertForQuestionAnswering.from_pretrained(args.bert_model, state_dict=model_state_dict,max_seq_length=args.max_seq_length)
-    model.to(device)
-    #model.load_state_dict(torch.load(args.trained_model))
+    #model_state_dict = torch.load(args.trained_model)
+    #model = BertForQuestionAnswering.from_pretrained(args.bert_model, state_dict=model_state_dict,max_seq_length=args.max_seq_length)
+    #model.to(device)
+    model.load_state_dict(torch.load(args.trained_model))
     
     if args.fp16:
         model.half()
@@ -970,11 +970,11 @@ def main():
         #model.train() 
         model.eval() # Set to eval instead of training in this develop loss loop
         torch.no_grad()
-        for _ in trange(int(args.num_train_epochs), desc="Epoch"):
-            ep = 0
+        ep = 0
+        for _ in trange(int(args.num_train_epochs), desc="Epoch"):       
             loss_eval["Epoch: " + str(ep)] = 0
-            for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
-                batch_count = 0
+            batch_count = 0
+            for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):                
                 if n_gpu == 1:
                     batch = tuple(t.to(device) for t in batch) # multi-gpu does scattering it-self
                 #input_ids, input_mask, segment_ids, start_positions, end_positions = batch
@@ -1014,7 +1014,7 @@ def main():
                 batch_count = batch_count + 1
                 global_step += 1
             #loss_eval["Epoch: " + str(ep)] =loss_eval["Epoch: " + str(ep)]/len(train_features)        
-            loss_eval["Epoch: " + str(ep)] =loss_eval["Epoch: " + str(ep)]/global_step        
+            loss_eval["Epoch: " + str(ep)] =loss_eval["Epoch: " + str(ep)]/batch_count       
             ##### To create and save loss in evaluation dataset #######################
 #             for step, batch in enumerate(tqdm(eval_dataloader, desc="Iteration")):
 #                 if n_gpu == 1:

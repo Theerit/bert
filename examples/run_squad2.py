@@ -39,6 +39,7 @@ from torch.utils.data.distributed import DistributedSampler
 
 from pytorch_pretrained_bert.tokenization import printable_text, whitespace_tokenize, BasicTokenizer, BertTokenizer
 from pytorch_pretrained_bert.modeling import BertForQuestionAnswering
+from pytorch_pretrained_bert.file_utils import PYTORCH_PRETRAINED_BERT_CACHE
 #import os
 #sys.path.append(os.path.abspath("/home/theerit/theerit/pytorch-pretrained-BERT/pytorch_pretrained_bert"))
 #from modeling_binary import BertForQuestionAnswering
@@ -85,6 +86,8 @@ class SquadExample(object):
             s += ", start_position: %d" % (self.start_position)
         if self.start_position:
             s += ", end_position: %d" % (self.end_position)
+        if self.start_position:
+            s += ", is_impossible: %r" % (self.is_impossible)
         return s
 
 
@@ -317,14 +320,26 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length,
                 # we throw it out, since there is nothing to predict.
                 doc_start = doc_span.start
                 doc_end = doc_span.start + doc_span.length - 1
+                out_of_span = False 
                 if (example.start_position < doc_start or
                         example.end_position < doc_start or
                         example.start_position > doc_end or example.end_position > doc_end):
-                    continue
-
-                doc_offset = len(query_tokens) + 2
-                start_position = tok_start_position - doc_start + doc_offset
-                end_position = tok_end_position - doc_start + doc_offset
+                    #continue
+                    out_of_span = True
+                # Added From HuggingFace github      
+                if out_of_span:
+                    start_position = 0
+                    end_position = 0
+                else:
+                    doc_offset = len(query_tokens) + 2
+                    start_position = tok_start_position - doc_start + doc_offset
+                    end_position = tok_end_position - doc_start + doc_offset
+                # Added From HuggingFace github 
+                
+#                 doc_offset = len(query_tokens) + 2
+#                 start_position = tok_start_position - doc_start + doc_offset
+#                 end_position = tok_end_position - doc_start + doc_offset
+                                
             if is_training and example.is_impossible:
                 start_position = 0
                 end_position = 0
@@ -801,6 +816,19 @@ def warmup_linear(x, warmup=0.002):
         return x/warmup
     return 1.0 - x
 
+def make_weights_for_balanced_classes(images, nclasses):                        
+    count = [0] * nclasses                                                      
+    for item in images:                                                         
+        count[item[1]] += 1                                                     
+    weight_per_class = [0.] * nclasses                                      
+    N = float(sum(count))                                                   
+    for i in range(nclasses):                                                   
+        weight_per_class[i] = N/float(count[i])                                 
+    weight = [0] * len(images)                                              
+    for idx, val in enumerate(images):                                          
+        weight[idx] = weight_per_class[val[1]]                                  
+    return weight    
+
 def main():
     parser = argparse.ArgumentParser()
 
@@ -928,19 +956,37 @@ def main():
             len(train_examples) / args.train_batch_size / args.gradient_accumulation_steps * args.num_train_epochs)
 
     # Prepare model
-    model = BertForQuestionAnswering.from_pretrained(args.bert_model,max_seq_length=args.max_seq_length)
+    #model = BertForQuestionAnswering.from_pretrained(args.bert_model,max_seq_length=args.max_seq_length)
+    model = BertForQuestionAnswering.from_pretrained(args.bert_model,
+                cache_dir=PYTORCH_PRETRAINED_BERT_CACHE / 'distributed_{}'.format(args.local_rank),max_seq_length=args.max_seq_length)
     if args.fp16:
         model.half()
     model.to(device)
     if args.local_rank != -1:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank],
-                                                          output_device=args.local_rank)
+            try:
+                from apex.parallel import DistributedDataParallel as DDP
+            except ImportError:
+                raise ImportError("Please install apex from https://www.github.com/nvidia/apex to use distributed and fp16 training.")
+
+            model = DDP(model)
+
     elif n_gpu > 1:
         model = torch.nn.DataParallel(model)
 
     # Prepare optimizer
     param_optimizer = list(model.named_parameters())
-
+    #param_optimizer = list(model.bert.named_parameters())+list(model.qa_outputs.named_parameters())
+    # Remove the added in binary classifier branches
+    #pdb.set_trace()
+#     param_optimizer.remove('binary_answers.weight')
+#     param_optimizer.remove('binary_answers.bias')
+#     param_optimizer.remove('binary_outputs.weight')
+#     param_optimizer.remove('binary_outputs.bias')
+#     param_optimizer.remove('binary_outputs_2.weight')
+#     param_optimizer.remove('binary_outputs_2.bias')
+#     param_optimizer.remove('binary_outputs_3.weight')
+#     param_optimizer.remove('binary_outputs_3.bias')
+    
     # hack to remove pooler, which is not used
     # thus it produce None grad that break apex
     param_optimizer = [n for n in param_optimizer if 'pooler' not in n[0]]
@@ -980,18 +1026,35 @@ def main():
                              lr=args.learning_rate,
                              warmup=args.warmup_proportion,
                              t_total=t_total)
-  
+    ####### Add on optimizer for binary classifer branch ########
+    #pdb.set_trace()
+#     param_binary_optimizer = list(model.binary_outputs.named_parameters()) + list(model.binary_outputs_2.named_parameters()) + list(model.binary_outputs_3.named_parameters()) + list(model.binary_answers.named_parameters())
+#     #param_binary_optimizer = list(model.binary_answers.named_parameters())
+#     binary_grouped_parameters = [{'params': [p for n, p in param_binary_optimizer]}]
+#     optimizer_binary = torch.optim.SGD(binary_grouped_parameters, lr = 0.0001, momentum=0.9)
+        
     global_step = 0
     loss_train = {}
     loss_eval = {}
     if args.do_train:
-        train_features = convert_examples_to_features(
-            examples=train_examples,
-            tokenizer=tokenizer,
-            max_seq_length=args.max_seq_length,
-            doc_stride=args.doc_stride,
-            max_query_length=args.max_query_length,
-            is_training=True)
+        cached_train_features_file = args.train_file+'_{0}_{1}_{2}_{3}'.format(
+            args.bert_model, str(args.max_seq_length), str(args.doc_stride), str(args.max_query_length))
+        train_features = None
+        try:
+            with open(cached_train_features_file, "rb") as reader:
+                train_features = pickle.load(reader)
+        except:
+            train_features = convert_examples_to_features(
+                examples=train_examples,
+                tokenizer=tokenizer,
+                max_seq_length=args.max_seq_length,
+                doc_stride=args.doc_stride,
+                max_query_length=args.max_query_length,
+                is_training=True)
+            if args.local_rank == -1 or torch.distributed.get_rank() == 0:
+                logger.info("  Saving train features into cached file %s", cached_train_features_file)
+                with open(cached_train_features_file, "wb") as writer:
+                    pickle.dump(train_features, writer)
         logger.info("***** Running training *****")
         logger.info("  Num orig examples = %d", len(train_examples))
         logger.info("  Num split examples = %d", len(train_features))
@@ -1011,7 +1074,17 @@ def main():
             train_sampler = RandomSampler(train_data)
         else:
             train_sampler = DistributedSampler(train_data)
+        #pdb.set_trace()
+        # For unbalanced dataset we create a weighted sampler                       
+        class_sample_count = [all_unanswerables.shape[0] - all_unanswerables.sum().item(), all_unanswerables.sum().item()] 
+        weights = 1.0 / torch.Tensor(class_sample_count).double()
+        weights = weights.double()
+        samples_weight = np.array([weights[t] for t in all_unanswerables])
+        samples_weight = torch.from_numpy(samples_weight).type('torch.DoubleTensor')
+        #train_sampler = torch.utils.data.sampler.WeightedRandomSampler(weights=samples_weight,num_samples= len(train_data))
         train_dataloader = DataLoader(train_data, sampler=train_sampler, batch_size=args.train_batch_size)
+        #pdb.set_trace()
+        #train_dataloader = DataLoader(train_data, sampler=train_sampler, batch_size=args.train_batch_size)
         
         
 
@@ -1044,6 +1117,10 @@ def main():
 #         ##### To create and save loss in evaluation dataset #######################
 
         model.train()
+        # Save init values
+        old_state_dict = {}
+        for key in model.state_dict():
+            old_state_dict[key] = model.state_dict()[key].clone()
         ep = 0
         for _ in trange(int(args.num_train_epochs), desc="Epoch"):
             batch_count = 0
@@ -1053,7 +1130,8 @@ def main():
                 input_ids, input_mask, segment_ids, start_positions, end_positions, unanswerables = batch
                 #pdb.set_trace()
                 loss = model(input_ids, segment_ids, input_mask, start_positions, end_positions,unanswerables=unanswerables,max_seq_length = args.max_seq_length)
-                loss_train['Epoch: '+str(ep) + 'Batch: ' + str(batch_count)] = loss.item()
+                if batch_count % 50 == 0:
+                    print("loss :" + str(loss.item()))
                 #loss_temp = loss
                 if n_gpu > 1:
                     loss = loss.mean() # mean() to average on multi-gpu.
@@ -1063,17 +1141,39 @@ def main():
                     loss = loss * args.loss_scale
                 if args.gradient_accumulation_steps > 1:
                     loss = loss / args.gradient_accumulation_steps
-                loss.backward()
-                if (step + 1) % args.gradient_accumulation_steps == 0:
-                    
+                if args.fp16:
+                    optimizer.backward(loss)
+                else:
+                    loss.backward()
+                    #print("backward")
+                loss_train['Epoch: '+str(ep) + 'Batch: ' + str(batch_count)] = loss.item()
+                with open(str(args.output_dir) + "Loss_Train.txt", "wb") as fp:   #Pickling
+                    pickle.dump(loss_train, fp)
+                #pdb.set_trace()
+                #a = list(model.parameters())[0].clone()
+                if (step + 1) % args.gradient_accumulation_steps == 0:                    
                     # modify learning rate with special warm up BERT uses
                     lr_this_step = args.learning_rate * warmup_linear(global_step/t_total, args.warmup_proportion)
                     for param_group in optimizer.param_groups:
                         param_group['lr'] = lr_this_step
                     optimizer.step()
                     optimizer.zero_grad()
+                    
+                    ### Optimizer for Binary Branchhhh ####
+#                     optimizer_binary.step()
+#                     optimizer_binary.zero_grad()
+                    
                     global_step += 1
                     batch_count += 1
+                    # Save new params
+                    new_state_dict = {}
+                    for key in model.state_dict():
+                        new_state_dict[key] = model.state_dict()[key].clone()
+
+                    # Compare params
+#                     for key in old_state_dict:
+#                         if not (old_state_dict[key] == new_state_dict[key]).all():
+#                             print('Diff in {}'.format(key))
                     
             ##### To create and save loss in evaluation dataset #######################
 #             for step, batch in enumerate(tqdm(eval_dataloader, desc="Iteration")):

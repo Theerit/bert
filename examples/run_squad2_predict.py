@@ -445,7 +445,7 @@ RawResult = collections.namedtuple("RawResult",
 
 def write_predictions(all_examples, all_features, all_results, n_best_size,
                       max_answer_length, do_lower_case, output_prediction_file,
-                      output_nbest_file, verbose_logging, do_squad2,null_score_diff_threshold):
+                      output_nbest_file,output_null_log_odds_file ,verbose_logging, do_squad2,null_score_diff_threshold):
     """Write final predictions to the json file."""
     logger.info("Writing predictions to: %s" % (output_prediction_file))
     logger.info("Writing nbest to: %s" % (output_nbest_file))
@@ -490,7 +490,9 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
 #                     null_start_logit = result.start_logits[0]
 #                     null_end_logit = result.end_logits[0]
             if do_squad2:
-                unanswerable_prob = _compute_softmax(result.unanswerable_logits)
+                #pdb.set_trace()
+                #unanswerable_prob = _compute_softmax(result.unanswerable_logits)
+                unanswerable_prob = 1/(1+ math.exp(-1*result.unanswerable_logits[0]))
                 
             for start_index in start_indexes:
                 for end_index in end_indexes:
@@ -634,7 +636,7 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
             output["start_logit"] = entry.start_logit
             output["end_logit"] = entry.end_logit
             #output["unanswerable_logit"] = max(entry.unanswerable_logit)
-            output["unanswerable_probs"] = unanswerable_prob[1]
+            output["unanswerable_probs"] = unanswerable_prob
             nbest_json.append(output)
 
         assert len(nbest_json) >= 1
@@ -645,9 +647,9 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
         else:
             # predict "" if probablity of being unanswerable (1) is higher than being answerable (0)
             #score_diff = score_null - best_non_null_entry.start_logit - (best_non_null_entry.end_logit)           
-            scores_diff_json[example.qas_id] = unanswerable_prob[1]
+            scores_diff_json[example.qas_id] = unanswerable_prob
             #if score_diff > null_score_diff_threshold:
-            if unanswerable_prob[1] > null_score_diff_threshold:
+            if unanswerable_prob > null_score_diff_threshold:
                 all_predictions[example.qas_id] = ""
             else:
                 all_predictions[example.qas_id] = best_non_null_entry.text
@@ -995,14 +997,24 @@ def main():
     if True:
         eval_examples = read_squad_examples(
             input_file=args.predict_file, is_training=False,do_squad2 = args.do_squad2)
-        eval_features = convert_examples_to_features(
-            examples=eval_examples,
-            tokenizer=tokenizer,
-            max_seq_length=args.max_seq_length,
-            doc_stride=args.doc_stride,
-            max_query_length=args.max_query_length,
-            is_training=False,do_squad2 = args.do_squad2)
-
+        cached_eval_features_file = args.predict_file+'_{0}_{1}_{2}_{3}'.format(
+            args.bert_model, str(args.max_seq_length), str(args.doc_stride), str(args.max_query_length))
+        eval_features = None
+        try:
+            with open(cached_eval_features_file, "rb") as reader:
+                eval_features = pickle.load(reader)
+        except:
+            eval_features = convert_examples_to_features(
+                examples=eval_examples,
+                tokenizer=tokenizer,
+                max_seq_length=args.max_seq_length,
+                doc_stride=args.doc_stride,
+                max_query_length=args.max_query_length,
+                is_training=False,do_squad2 = args.do_squad2)
+            if args.local_rank == -1 or torch.distributed.get_rank() == 0:
+                logger.info("  Saving eval features into cached file %s", cached_eval_features_file)
+                with open(cached_eval_features_file, "wb") as writer:
+                    pickle.dump(eval_features, writer)
         logger.info("***** Running predictions *****")
         logger.info("  Num orig examples = %d", len(eval_examples))
         logger.info("  Num split examples = %d", len(eval_features))
@@ -1056,7 +1068,7 @@ def main():
         write_predictions(eval_examples, eval_features, all_results,
                           args.n_best_size, args.max_answer_length,
                           args.do_lower_case, output_prediction_file,
-                          output_nbest_file, args.verbose_logging,args.do_squad2,args.null_score_diff_threshold)        
+                          output_nbest_file, output_null_log_odds_file, args.verbose_logging,do_squad2=args.do_squad2,null_score_diff_threshold=args.null_score_diff_threshold)        
         
         #To compute total loss in evaluation dataset
 #         from torch.nn import CrossEntropyLoss
